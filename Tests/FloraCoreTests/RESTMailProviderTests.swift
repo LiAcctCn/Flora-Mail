@@ -263,3 +263,129 @@ struct RESTMailProviderTests {
         #expect(await http.captured().isEmpty)
     }
 }
+
+
+@Suite("REST read-only recovery")
+@MainActor
+struct RESTRecoveryTests {
+    private func folderResponses() throws -> [MailHTTPResponse] {
+        try ["inbox", "sentitems", "drafts", "deleteditems", "archive"].map {
+            try restJSON(["id": "folder-\($0)", "displayName": $0, "childFolderCount": 0])
+        } + [restJSON(["value": []])]
+    }
+    @Test func graphContinuationAcceptsEquivalentODataPathsWithoutChangingIDs() throws {
+        let expected = try #require(URL(string: "https://graph.microsoft.com/v1.0/me/mailFolders/Folder%2FID/messages/delta"))
+        let alternate = try #require(URL(string: "https://graph.microsoft.com/v1.0/me/mailfolders('Folder%2FID')/messages/delta?$skiptoken=fictional"))
+        try GraphResourcePath.validate(alternate, matches: expected)
+        for raw in ["https://graph.microsoft.com/v1.0/me/mailfolders('folder%2FID')/messages/delta", "https://graph.microsoft.com/v1.0/users/someone/mailfolders('Folder%2FID')/messages/delta", "https://graph.microsoft.com/v1.0/me/mailfolders('Other')/messages/delta"] {
+            #expect(throws: RemoteMailError.malformedResponse) { try GraphResourcePath.validate(#require(URL(string: raw)), matches: expected) }
+        }
+    }
+    @Test func graphRemovedFolderCheckpointAdvancesWithoutDeletingCachedMessages() async throws {
+        let initialState: [String: Any] = ["folders": [["id": "folder-inbox", "role": "inbox"], ["id": "removed-folder", "role": "archive"], ["id": "folder-archive", "role": "archive"]], "links": [:], "index": 1, "pendingIDs": ["old-pending-message"], "pendingLink": "https://graph.microsoft.com/v1.0/me/mailFolders/removed-folder/messages/delta?$skiptoken=old", "pendingCompletesFolder": false]
+        let http = ScriptedMailHTTP(try folderResponses() + [restJSON(["value": [], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/folder-archive/messages/delta?$deltatoken=new"])])
+        let provider = MicrosoftMailProvider(accountID: UUID(), credentialReference: testReference, configuration: microsoftConfig, credentials: try await testCredentials(microsoftConfig), http: http)
+        let checkpoint = SyncCheckpoint(opaqueState: String(decoding: try JSONSerialization.data(withJSONObject: initialState), as: UTF8.self), initialComplete: true)
+        let page = try await provider.fetchPage(MailSyncRequest(checkpoint: checkpoint, since: Date()))
+        #expect(page.messages.isEmpty && page.deletedProviderMessageIDs.isEmpty)
+        #expect(page.checkpoint.opaqueState?.contains("removed-folder") == false)
+        #expect(await http.captured().last?.url?.path.contains("folder-archive") == true)
+    }
+    @Test func graphExpiredDeltaRestartsOnlyItsFolderAndRetainsOtherLinks() async throws {
+        let old = "https://graph.microsoft.com/v1.0/me/mailFolders/folder-inbox/messages/delta?$deltatoken=expired"
+        let archive = "https://graph.microsoft.com/v1.0/me/mailFolders/folder-archive/messages/delta?$deltatoken=keep"
+        let initialState: [String: Any] = ["folders": [["id": "folder-inbox", "role": "inbox"], ["id": "folder-archive", "role": "archive"]], "links": ["folder-inbox": old, "folder-archive": archive], "index": 0, "pendingIDs": [], "pendingCompletesFolder": false]
+        let http = ScriptedMailHTTP(try folderResponses() + [restJSON([:], status: 410), restJSON(["value": [], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailfolders('folder-inbox')/messages/delta?$deltatoken=new"])])
+        let provider = MicrosoftMailProvider(accountID: UUID(), credentialReference: testReference, configuration: microsoftConfig, credentials: try await testCredentials(microsoftConfig), http: http)
+        let checkpoint = SyncCheckpoint(opaqueState: String(decoding: try JSONSerialization.data(withJSONObject: initialState), as: UTF8.self), initialComplete: true)
+        let page = try await provider.fetchPage(MailSyncRequest(checkpoint: checkpoint, since: Date()))
+        let saved = try #require(page.checkpoint.opaqueState)
+        #expect(saved.contains("keep") && !saved.contains("expired"))
+        let requests = await http.captured()
+        #expect(requests[6].url?.query?.contains("deltatoken=expired") == true)
+        #expect(requests[7].url?.query?.contains("receivedDateTime") == true)
+        #expect(page.deletedProviderMessageIDs.isEmpty)
+    }
+    @Test func malformedGmailBodyPreservesEnvelopeAndDoesNotBlockFollowingMessage() async throws {
+        var broken = gmailMessage("broken")
+        var payload = try #require(broken["payload"] as? [String: Any])
+        payload["body"] = ["data": 12345]; broken["payload"] = payload
+        let http = ScriptedMailHTTP([try restJSON(["emailAddress": "reader@example.invalid", "historyId": "100"]), try restJSON(["messages": [["id": "broken"], ["id": "valid"]]]), try restJSON(broken), try restJSON(gmailMessage("valid"))])
+        let provider = GmailMailProvider(accountID: UUID(), credentialReference: testReference, configuration: googleConfig, credentials: try await testCredentials(googleConfig), http: http)
+        let page = try await provider.fetchPage(MailSyncRequest(since: Date()))
+        #expect(page.messages.count == 2 && page.checkpoint.initialComplete)
+        #expect(page.messages[0].subject == "Review broken" && page.messages[0].from.email == "jane@example.invalid")
+        #expect(page.messages[0].body.isEmpty && !page.messages[0].contentWarnings.isEmpty)
+        #expect(page.messages[1].body == "Please review the proposal.")
+    }
+    @Test func invalidGmailBase64NeverBecomesOriginalText() async throws {
+        var broken = gmailMessage("broken")
+        var payload = try #require(broken["payload"] as? [String: Any])
+        payload["body"] = ["data": "invalid!base64"]; broken["payload"] = payload
+        let http = ScriptedMailHTTP([try restJSON(["messages": [broken]])])
+        let accountID = UUID()
+        let provider = GmailMailProvider(accountID: accountID, credentialReference: testReference, configuration: googleConfig, credentials: try await testCredentials(googleConfig), http: http)
+        let source = MailMessage(providerID: "broken", accountID: accountID, threadID: StableMailIdentity.thread(accountID: accountID, providerID: "thread-broken"), from: MailAddress(name: "Jane", email: "jane@example.invalid"), to: [], subject: "Review broken", body: "", providerThreadID: "thread-broken")
+        let thread = try await provider.fetchThread(message: source)
+        #expect(thread.messages.first?.body.isEmpty == true)
+        #expect(thread.messages.first?.contentWarnings.isEmpty == false)
+        #expect(await http.captured().first?.url?.path.hasSuffix("/threads/thread-broken") == true)
+    }
+    @Test func malformedGraphBodyPreservesEnvelopeAndOtherMessages() async throws {
+        var broken = graphMessage("broken"); broken["body"] = ["contentType": "html", "content": 123]
+        let http = ScriptedMailHTTP(try folderResponses() + [restJSON(["value": [["id": "broken", "body": 123], ["id": "valid"]], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailfolders('folder-inbox')/messages/delta?$deltatoken=new"]), restJSON(broken), restJSON(graphMessage("valid"))])
+        let provider = MicrosoftMailProvider(accountID: UUID(), credentialReference: testReference, configuration: microsoftConfig, credentials: try await testCredentials(microsoftConfig), http: http)
+        let page = try await provider.fetchPage(MailSyncRequest(since: Date()))
+        #expect(page.messages.count == 2)
+        #expect(page.messages[0].body.isEmpty && page.messages[0].subject == "Proposal")
+        #expect(!page.messages[0].contentWarnings.isEmpty)
+        #expect(page.messages[1].body == "Hello 世界")
+    }
+    @Test func gmailAttachmentHydrationAuthenticationFailureDoesNotBecomeContentFallback() async throws {
+        var wire = gmailMessage("body-attachment")
+        var payload = try #require(wire["payload"] as? [String: Any]); payload["body"] = ["attachmentId": "body-part", "size": 100]; wire["payload"] = payload
+        let http = ScriptedMailHTTP([try restJSON(["messages": [wire]]), try restJSON([:], status: 403)])
+        let provider = GmailMailProvider(accountID: UUID(), credentialReference: testReference, configuration: googleConfig, credentials: try await testCredentials(googleConfig), http: http)
+        await #expect(throws: RemoteMailError.authorizationDenied) { try await provider.fetchThread(providerThreadID: "thread-body-attachment") }
+    }
+    @Test func graphThreadWorksFromPersistedIdentityAndRejectsCrossAccountSource() async throws {
+        let accountID = UUID()
+        let source = MailMessage(providerID: "one", accountID: accountID, threadID: StableMailIdentity.thread(accountID: accountID, providerID: "conversation-1"), from: MailAddress(name: "Jane", email: "jane@example.invalid"), to: [], subject: "Proposal", body: "", providerThreadID: "conversation-1")
+        let http = ScriptedMailHTTP(try folderResponses() + [restJSON(["value": [["id": "one"]]]), restJSON(graphMessage("one"))])
+        let provider = MicrosoftMailProvider(accountID: accountID, credentialReference: testReference, configuration: microsoftConfig, credentials: try await testCredentials(microsoftConfig), http: http)
+        let thread = try await provider.fetchThread(message: source)
+        #expect(thread.id == source.threadID && thread.messages.count == 1)
+        #expect(thread.messages.first?.folder == .inbox)
+        var other = source; other.accountID = UUID()
+        await #expect(throws: RemoteMailError.invalidConfiguration) { try await provider.fetchThread(message: other) }
+        #expect(await http.captured().count == 8)
+    }
+    @Test func threadRejectsAnotherConversationFromTheSameMailbox() async throws {
+        var wire = graphMessage("one"); wire["conversationId"] = "another-thread"
+        let http = ScriptedMailHTTP(try folderResponses() + [restJSON(["value": [["id": "one"]]]), restJSON(wire)])
+        let provider = MicrosoftMailProvider(accountID: UUID(), credentialReference: testReference, configuration: microsoftConfig, credentials: try await testCredentials(microsoftConfig), http: http)
+        await #expect(throws: RemoteMailError.malformedResponse) { try await provider.fetchThread(providerConversationID: "conversation-1") }
+    }
+    @Test func gmailAttachedMIMETreeDoesNotTriggerAutomaticDownloadsOrEnterVisibleBody() async throws {
+        var wire = gmailMessage("attached-tree")
+        wire["payload"] = ["mimeType": "multipart/mixed", "headers": [["name": "Subject", "value": "Attached message"]], "parts": [
+            ["partId": "0", "mimeType": "text/plain", "body": ["data": Data("Visible body".utf8).base64URLString]],
+            ["partId": "1", "mimeType": "multipart/mixed", "headers": [["name": "Content-Disposition", "value": "attachment; filename*=UTF-8''research%20%E4%B8%AD.mime"]], "body": ["attachmentId": "forwarded", "size": 300], "parts": [
+                ["partId": "1.1", "mimeType": "text/plain", "body": ["attachmentId": "private-attached-text", "size": 30]]
+            ]]
+        ]]
+        let http = ScriptedMailHTTP([try restJSON(["messages": [wire]])])
+        let provider = GmailMailProvider(accountID: UUID(), credentialReference: testReference, configuration: googleConfig, credentials: try await testCredentials(googleConfig), http: http)
+        let thread = try await provider.fetchThread(providerThreadID: "thread-attached-tree")
+        #expect(thread.messages.first?.body == "Visible body")
+        #expect(thread.messages.first?.attachments.first?.name == "research 中.mime")
+        #expect(await http.captured().count == 1)
+    }
+    @Test func multibytePreviewIsBoundedByUTF8BytesAndDisclosesTruncation() throws {
+        var raw = graphMessage("long"); raw["body"] = ["contentType": "text", "content": String(repeating: "界", count: 200_000)]
+        let wire = try MailHTTP.decode(GraphMessageDTO.self, restJSON(raw).data)
+        let result = try MicrosoftMapping.message(wire, accountID: UUID(), role: .inbox)
+        #expect(result.body.utf8.count <= MIMEParser.maximumTextBytes)
+        #expect(!result.body.contains("�") && !result.contentWarnings.isEmpty)
+    }
+}

@@ -65,7 +65,7 @@ Gmail requests `gmail.readonly`. Microsoft requests delegated `Mail.Read`, `User
 
 **Demo Mode** selects fictional versus real mail. **Demo AI / Local AI / Off** independently selects assistance. No real account is required to launch or demonstrate the application. Disconnecting removes this device's saved credentials, preserves cached mail, and does not revoke provider-side consent.
 
-Real accounts are read-only throughout the provider and action layers: no sending, archive, delete, move, flag, or read/unread changes. Opening a real message does not mark it read on the server. Local drafts, classifications, and AI caches can still be saved. The GUI displays the synchronized portion of a conversation and uses safe text for HTML messages; scripts, remote images, and tracking pixels never load.
+Real accounts are read-only throughout the provider and action layers: no sending, archive, delete, move, flag, or read/unread changes. Opening a real message does not mark it read on the server. Local drafts, classifications, and AI caches can still be saved. The GUI displays cached conversations and can explicitly load more through each provider. HTML has a plain-text fallback and an optional isolated formatted view; scripts, remote images, tracking resources and navigation are blocked. Downloaded image attachments can be explicitly previewed and included in CID locations.
 
 The connection/sync code is implemented and covered by fake-provider tests. **Live Gmail, Microsoft, and iCloud authentication has not been verified in this environment because account credentials/application registrations were unavailable.** Consequently, Local AI over a live retrieved user's message remains unverified; the same normalized-message path is used by tests and Demo mail.
 
@@ -84,7 +84,7 @@ Flora checks local model metadata and forces the runtime's `:local` selector on 
 
 A stopped service, missing model, timeout, cancelled request, invalid JSON or unsupported response leaves the original email and normal composer usable. Local semantic search is deferred: the search UI falls back to conventional text matches rather than sending a whole mailbox to a language model.
 
-Real sending and mailbox writes, faithful HTML layout/inline image rendering, calendar integration, learned preferences, whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
+Real sending and mailbox writes, calendar integration, learned preferences, whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. Formatted HTML supports a restricted subset of mail presentation; encrypted content and universal layout fidelity are not supported. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
 
 ## Data and Undo
 

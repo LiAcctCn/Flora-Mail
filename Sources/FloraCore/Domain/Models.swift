@@ -91,15 +91,17 @@ public struct MailMessage: Codable, Identifiable, Equatable, Sendable {
     public var htmlBody: String?
     public var cc: [MailAddress]
     public var isImportant: Bool
-    public init(id: UUID = UUID(), providerID: String = "", accountID: UUID, threadID: UUID = UUID(), from: MailAddress, to: [MailAddress], subject: String, body: String, date: Date = Date(), folder: MailFolder = .inbox, isRead: Bool = false, isFlagged: Bool = false, categoryID: UUID? = nil, attachments: [MailAttachment] = [], providerThreadID: String? = nil, providerFolderIDs: [String] = [], htmlBody: String? = nil, cc: [MailAddress] = [], isImportant: Bool = false) {
+    public var contentWarnings: [String]
+    public init(id: UUID = UUID(), providerID: String = "", accountID: UUID, threadID: UUID = UUID(), from: MailAddress, to: [MailAddress], subject: String, body: String, date: Date = Date(), folder: MailFolder = .inbox, isRead: Bool = false, isFlagged: Bool = false, categoryID: UUID? = nil, attachments: [MailAttachment] = [], providerThreadID: String? = nil, providerFolderIDs: [String] = [], htmlBody: String? = nil, cc: [MailAddress] = [], isImportant: Bool = false, contentWarnings: [String] = []) {
         self.id = id; self.providerID = providerID.isEmpty ? id.uuidString : providerID; self.accountID = accountID
         self.threadID = threadID; self.from = from; self.to = to; self.subject = subject; self.body = body
         self.date = date; self.folder = folder; self.isRead = isRead; self.isFlagged = isFlagged
         self.categoryID = categoryID; self.attachments = attachments
         self.providerThreadID = providerThreadID; self.providerFolderIDs = providerFolderIDs; self.htmlBody = htmlBody; self.cc = cc
         self.isImportant = isImportant
+        self.contentWarnings = contentWarnings
     }
-    private enum CodingKeys: String, CodingKey { case id, providerID, accountID, threadID, from, to, subject, body, date, folder, isRead, isFlagged, categoryID, attachments, providerThreadID, providerFolderIDs, htmlBody, cc, isImportant }
+    private enum CodingKeys: String, CodingKey { case id, providerID, accountID, threadID, from, to, subject, body, date, folder, isRead, isFlagged, categoryID, attachments, providerThreadID, providerFolderIDs, htmlBody, cc, isImportant, contentWarnings }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id); providerID = try values.decode(String.self, forKey: .providerID)
@@ -113,6 +115,7 @@ public struct MailMessage: Codable, Identifiable, Equatable, Sendable {
         providerFolderIDs = try values.decodeIfPresent([String].self, forKey: .providerFolderIDs) ?? []
         htmlBody = try values.decodeIfPresent(String.self, forKey: .htmlBody); cc = try values.decodeIfPresent([MailAddress].self, forKey: .cc) ?? []
         isImportant = try values.decodeIfPresent(Bool.self, forKey: .isImportant) ?? false
+        contentWarnings = try values.decodeIfPresent([String].self, forKey: .contentWarnings) ?? []
     }
     public var preview: String { body.replacingOccurrences(of: "\n", with: " ") }
 }

@@ -10,8 +10,9 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
     private let credentials: any CredentialStore
     private let sessionFactory: any IMAPSessionFactory
     private let configuration: IMAPConfiguration
-    public init(account: MailAccount, credentials: any CredentialStore = KeychainCredentialStore(), sessionFactory: any IMAPSessionFactory = NetworkIMAPSessionFactory(), configuration: IMAPConfiguration = .iCloud) {
-        self.account = account; self.credentials = credentials; self.sessionFactory = sessionFactory; self.configuration = configuration
+    private let now: () -> Date
+    public init(account: MailAccount, credentials: any CredentialStore = KeychainCredentialStore(), sessionFactory: any IMAPSessionFactory = NetworkIMAPSessionFactory(), configuration: IMAPConfiguration = .iCloud, now: @escaping () -> Date = Date.init) {
+        self.account = account; self.credentials = credentials; self.sessionFactory = sessionFactory; self.configuration = configuration; self.now = now
     }
     public func fetchAccounts() async throws -> [MailAccount] {
         let session = try await authenticatedSession(); await session.close(); return [account]
@@ -65,7 +66,7 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
                 let selected = Array(cursor.uids.prefix(request.limit))
                 for uid in selected {
                     try Task.checkCancellation()
-                    let metadata = try IMAPMapping.metadata(await session.execute(.metadata(uid: uid)), uid: uid)
+                    let metadata = try await loadMetadata(uid: uid, session: session)
                     messages.append(try await message(metadata, folder: folder, validity: validity, session: session))
                 }
                 if let highest = selected.max() {
@@ -81,6 +82,60 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
             return try page(messages: messages, state: state, cursor: cursor, updates: updates, deleted: deleted)
         } catch { await session.close(); throw error }
     }
+    public func fetchThread(message source: MailMessage) async throws -> MailThread {
+        guard source.accountID == accountID, let anchor = source.providerThreadID,
+              MIMEParser.messageIdentifiers(anchor) == [anchor],
+              source.threadID == StableMailIdentity.thread(accountID: accountID, providerID: anchor) else { throw MailSyncError.unsupportedContent }
+        _ = try IMAPCommand.searchThread(anchor: anchor).wireText()
+        let session = try await authenticatedSession()
+        do {
+            let folders = try IMAPMapping.folders(await session.execute(.list), accountID: accountID)
+            let preferred = folders.filter { source.providerFolderIDs.contains($0.id) }
+                + folders.filter { !source.providerFolderIDs.contains($0.id) && ($0.role == .inbox || $0.role == .sent) }
+                + folders.filter { !source.providerFolderIDs.contains($0.id) && $0.role != .inbox && $0.role != .sent }
+            var result: [String: MailMessage] = [source.providerID: source]; var examined = 0
+            var textBytes = source.body.utf8.count + (source.htmlBody?.utf8.count ?? 0)
+            guard textBytes <= 32 * 1_024 * 1_024 else { throw IMAPError.responseTooLarge }
+            let deadline = now().addingTimeInterval(120)
+            var limited = preferred.count > 20
+            folderLoop: for folder in preferred.prefix(20) {
+                try Task.checkCancellation()
+                guard now() < deadline else { limited = true; break }
+                let validity = try IMAPMapping.validity(await session.execute(.examine(folder.id)))
+                guard now() < deadline else { limited = true; break }
+                let uids = try IMAPMapping.search(await session.execute(.searchThread(anchor: anchor))).reversed()
+                for uid in uids {
+                    guard examined < 500, now() < deadline else { limited = true; break folderLoop }
+                    examined += 1; try Task.checkCancellation()
+                    let metadata: IMAPMessageMetadata
+                    do { metadata = try await loadMetadata(uid: uid, session: session, deadline: deadline) }
+                    catch is IMAPConversationBudgetExceeded { limited = true; break folderLoop }
+                    // IMAP HEADER search is a substring search. Filter unrelated
+                    // matches before loading bodies and again after normalization.
+                    let root = MIMEParser.messageIdentifiers(metadata.headers["references"]).first
+                        ?? MIMEParser.messageIdentifiers(metadata.headers["in-reply-to"]).first
+                        ?? MIMEParser.messageIdentifiers(metadata.headers["message-id"]).first
+                    guard root == anchor else { continue }
+                    let item: MailMessage
+                    do { item = try await message(metadata, folder: folder, validity: validity, session: session, deadline: deadline) }
+                    catch is IMAPConversationBudgetExceeded { limited = true; break folderLoop }
+                    guard item.accountID == accountID, item.providerThreadID == anchor, item.threadID == source.threadID else { continue }
+                    guard result.count < 500 || result[item.providerID] != nil else { limited = true; break folderLoop }
+                    let bytes = item.body.utf8.count + (item.htmlBody?.utf8.count ?? 0)
+                    let previousBytes = result[item.providerID].map { $0.body.utf8.count + ($0.htmlBody?.utf8.count ?? 0) } ?? 0
+                    guard bytes <= 32 * 1_024 * 1_024 - textBytes + previousBytes else { limited = true; break folderLoop }
+                    textBytes += bytes - previousBytes; result[item.providerID] = item
+                }
+            }
+            try Task.checkCancellation(); await session.close()
+            var messages = result.values.sorted { $0.date < $1.date }
+            if limited, !messages.isEmpty {
+                messages[0].contentWarnings.append("Conversation retrieval reached Flora's limit of 20 folders, 500 candidate messages, 32 MiB of text or its retrieval time budget. Additional messages may remain on the server.")
+            }
+            return MailThread(id: source.threadID, messages: messages)
+        } catch { await session.close(); throw error }
+    }
+
     public func downloadAttachment(message: MailMessage, attachment: MailAttachment) async throws -> Data {
         guard message.accountID == accountID, message.attachments.contains(where: { $0.id == attachment.id && $0.providerID == attachment.providerID }),
               let partID = attachment.providerID, let reference: IMAPAttachmentReference = try Self.decode(partID), let folder = message.providerFolderIDs.first,
@@ -95,10 +150,28 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
             let response = try await session.execute(.body(uid: reference.uid, section: reference.section, maximumBytes: max(reference.encodedSize + 1, 1)))
             let data = try IMAPMapping.body(response, uid: reference.uid, section: reference.section)
             guard data.count == reference.encodedSize else { throw IMAPError.malformedResponse }
-            let decoded = MIMEParser.decodeTransfer(data, encoding: reference.encoding)
+            let decoded = try MIMEParser.decodeTransferValidated(data, encoding: reference.encoding)
             try Task.checkCancellation(); await session.close(); return decoded
         } catch { await session.close(); throw error }
     }
+    private func loadMetadata(uid: UInt32, session: any IMAPSession, deadline: Date? = nil) async throws -> IMAPMessageMetadata {
+        try checkConversationDeadline(deadline)
+        let response = try await session.execute(.metadata(uid: uid))
+        do { return try IMAPMapping.metadata(response, uid: uid) }
+        catch {
+            // BODYSTRUCTURE syntax from one message can be malformed even when
+            // the tagged IMAP command completed. Retry only bounded headers;
+            // transport/protocol failures from execute are never swallowed.
+            try checkConversationDeadline(deadline)
+            let headers = try await session.execute(.headers(uid: uid))
+            var metadata: IMAPMessageMetadata
+            do { metadata = try IMAPMapping.metadata(headers, uid: uid, requireStructure: false) }
+            catch { metadata = IMAPMessageMetadata(uid: uid, flags: [], headers: [:], date: nil, parts: []) }
+            metadata.warnings.append("The server returned malformed message metadata. Available headers are shown; later messages can still synchronize.")
+            return metadata
+        }
+    }
+
     private func authenticatedSession() async throws -> any IMAPSession {
         guard account.providerType == .iCloud, let reference = account.credentialReference,
               let bytes = try await credentials.read(reference: reference), let decoded = try? JSONDecoder().decode(IMAPCredential.self, from: bytes) else { throw MailSyncError.authenticationRequired }
@@ -114,35 +187,56 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
         let hasMore = cursor.folderIndex < cursor.folders.count
         return MailSyncPage(messages: messages, checkpoint: SyncCheckpoint(opaqueState: try Self.encode(state), continuationToken: hasMore ? try Self.encode(cursor) : nil, initialComplete: !hasMore), hasMore: hasMore, deletedProviderMessageIDs: deleted, messageStateUpdates: updates)
     }
-    private func message(_ metadata: IMAPMessageMetadata, folder: MailFolderDescriptor, validity: UInt32, session: any IMAPSession) async throws -> MailMessage {
+    private func message(_ metadata: IMAPMessageMetadata, folder: MailFolderDescriptor, validity: UInt32, session: any IMAPSession, deadline: Date? = nil) async throws -> MailMessage {
         let providerID = try Self.encode(IMAPMessageReference(folder: folder.id, validity: validity, uid: metadata.uid))
-        let textParts = metadata.parts.filter { !$0.isAttachment && ["text/plain", "text/html"].contains($0.mimeType) }
-        let preferred = textParts.contains(where: { $0.mimeType == "text/plain" }) ? textParts.filter { $0.mimeType == "text/plain" } : textParts
+        let preferred = metadata.parts.filter { !$0.isAttachment && $0.isPreferredText && ["text/plain", "text/html"].contains($0.mimeType) }
         var bodyParts: [String] = []; var htmlParts: [String] = []; var remaining = MIMEParser.maximumTextBytes
+        var warnings = metadata.warnings
         for part in preferred.prefix(20) where remaining > 0 {
             let length = min(part.size, remaining)
             if length == 0 { continue }
+            // Network failures still stop the page. A successfully retrieved but
+            // malformed MIME part produces a partial preview and can advance.
+            try checkConversationDeadline(deadline)
             let response = try await session.execute(.body(uid: metadata.uid, section: part.section, maximumBytes: length))
-            let encoded = try IMAPMapping.body(response, uid: metadata.uid, section: part.section)
-            let text = MIMEParser.decodeText(MIMEParser.decodeTransfer(encoded, encoding: part.encoding), charset: part.charset)
-            bodyParts.append(part.mimeType == "text/html" ? MIMEParser.htmlToText(text) : text)
-            if part.mimeType == "text/html" { htmlParts.append(text) }
-            remaining -= encoded.count
-            if part.size > length { bodyParts.append("[Message preview truncated at Flora's local size limit.]") }
+            do {
+                let encoded = try IMAPMapping.body(response, uid: metadata.uid, section: part.section)
+                guard encoded.count <= length else { throw IMAPError.malformedResponse }
+                let decoded = try MIMEParser.decodeTransferValidated(encoded, encoding: part.encoding, allowTruncated: part.size > length)
+                let text = MIMEParser.decodeText(decoded, charset: part.charset)
+                bodyParts.append(part.mimeType == "text/html" ? MIMEParser.htmlToText(text) : text)
+                if part.mimeType == "text/html" { htmlParts.append(text) }
+                if let header = part.forwardedHeader { warnings.append("Included inline \(header.lowercased()).") }
+                if part.size > length { warnings.append("Message preview is truncated at Flora's local size limit.") }
+            } catch {
+                warnings.append("A message part could not be decoded. Other readable content is still shown.")
+            }
+            // Charge requested bytes even for bad/empty responses so malformed
+            // alternatives cannot bypass the per-message preview budget.
+            remaining -= length
+        }
+        if preferred.count > 20 || (remaining == 0 && preferred.reduce(0, { $0 + min($1.size, MIMEParser.maximumTextBytes) }) > MIMEParser.maximumTextBytes) {
+            warnings.append("Additional message text exceeds Flora's bounded preview limit.")
         }
         let attachments = try metadata.parts.filter(\.isAttachment).map { part in
             let reference = IMAPAttachmentReference(accountID: accountID, messageID: providerID, validity: validity, uid: metadata.uid, section: part.section, encoding: part.encoding, encodedSize: part.size)
             return MailAttachment(id: StableMailIdentity.attachment(accountID: accountID, providerID: providerID + ":" + part.section), name: part.name ?? "Attachment \(part.section)", size: part.encoding == "base64" ? part.size * 3 / 4 : part.size, providerID: try Self.encode(reference), mimeType: part.mimeType, isInline: part.isInline, contentID: part.contentID)
         }
         let headers = metadata.headers
-        let threadReference = headers["references"]?.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? headers["in-reply-to"] ?? headers["message-id"] ?? providerID
+        let threadReference = MIMEParser.messageIdentifiers(headers["references"]).first ?? MIMEParser.messageIdentifiers(headers["in-reply-to"]).first ?? MIMEParser.messageIdentifiers(headers["message-id"]).first ?? providerID
         let rendered = bodyParts.joined(separator: "\n\n")
-        let body = rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "No supported text preview. This message may contain only attachments." : rendered
+        if rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            warnings.append("No readable text preview is available. This message may contain only attachments or unsupported content.")
+        }
+        let body = rendered
         return MailMessage(id: StableMailIdentity.message(accountID: accountID, providerID: providerID), providerID: providerID, accountID: accountID,
                            threadID: StableMailIdentity.thread(accountID: accountID, providerID: threadReference), from: MIMEParser.addresses(headers["from"] ?? "").first ?? MailAddress(name: "Unknown sender", email: ""),
                            to: MIMEParser.addresses(headers["to"] ?? ""), subject: headers["subject"] ?? "(No subject)", body: body, date: MIMEParser.date(headers["date"]) ?? metadata.date ?? Date(timeIntervalSince1970: 0),
                            folder: folder.role ?? .archive, isRead: metadata.flags.contains("\\seen"), isFlagged: metadata.flags.contains("\\flagged"), attachments: attachments,
-                           providerThreadID: threadReference, providerFolderIDs: [folder.id], htmlBody: htmlParts.isEmpty ? nil : htmlParts.joined(separator: "\n"), cc: MIMEParser.addresses(headers["cc"] ?? ""))
+                           providerThreadID: threadReference, providerFolderIDs: [folder.id], htmlBody: htmlParts.isEmpty ? nil : htmlParts.joined(separator: "\n"), cc: MIMEParser.addresses(headers["cc"] ?? ""), contentWarnings: Array(Set(warnings)).sorted())
+    }
+    private func checkConversationDeadline(_ deadline: Date?) throws {
+        if let deadline, now() >= deadline { throw IMAPConversationBudgetExceeded() }
     }
     private static func encode<T: Encodable>(_ value: T) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
@@ -172,3 +266,6 @@ private struct IMAPCursor: Codable {
 }
 private struct IMAPMessageReference: Codable { var folder: String; var validity: UInt32; var uid: UInt32 }
 private struct IMAPAttachmentReference: Codable { var accountID: UUID; var messageID: String; var validity: UInt32; var uid: UInt32; var section: String; var encoding: String; var encodedSize: Int }
+
+/// Internal control flow for returning an already retrieved partial conversation.
+private struct IMAPConversationBudgetExceeded: Error {}

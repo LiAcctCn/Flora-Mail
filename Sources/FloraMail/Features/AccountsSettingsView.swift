@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import FloraCore
 
 struct AccountsSettingsView: View {
@@ -79,11 +80,13 @@ struct AccountsSettingsView: View {
     }
 }
 
-private struct AddAccountView: View {
+struct AddAccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let existing: MailAccount?
     @State private var provider: MailProviderType = .gmail
+    @State private var importingRegistration = false
+    @State private var importError: String?
     @State private var clientID = ""
     @State private var email = ""
     @State private var password = ""
@@ -109,6 +112,8 @@ private struct AddAccountView: View {
             } else {
                 TextField("Public OAuth client ID", text: $clientID).textFieldStyle(.roundedBorder)
                     .disabled(model.accountController.connecting).accessibilityIdentifier("oauthClientID")
+                Button("Import Public App Registration…") { importingRegistration = true }.controlSize(.small).disabled(model.accountController.connecting)
+                if let importError { Text(importError).font(.caption).foregroundStyle(.red) }
                 Text(provider == .gmail
                      ? "Use a Google OAuth Desktop app client ID with the Gmail API enabled. Testing apps require your account to be added as a test user. Flora requests gmail.readonly only."
                      : "Use a Microsoft public-client application ID with personal and work/school account support. Enable the desktop loopback redirect; Flora requests Mail.Read, User.Read for identity, and offline_access for refresh.")
@@ -135,7 +140,13 @@ private struct AddAccountView: View {
                     .disabled(model.accountController.connecting || (provider == .iCloud ? email.isEmpty || password.isEmpty : clientID.isEmpty))
                     .accessibilityIdentifier("connectMailAccount")
             }
-        }.padding(28).frame(width: 590, height: 540)
+        }.padding(28).frame(width: 590, height: 600)
+        .fileImporter(isPresented: $importingRegistration, allowedContentTypes: [.json]) { result in
+            do {
+                clientID = try OAuthRegistrationImport.clientID(from: result.get(), provider: provider)
+                importError = nil
+            } catch { importError = "This file does not contain a valid public app identifier for the selected provider." }
+        }
         .interactiveDismissDisabled(model.accountController.connecting)
         .onAppear { provider = existing?.providerType ?? .gmail; clientID = existing?.oauthClientID ?? ""; email = existing?.address.email ?? "" }
         .onChange(of: provider) { _, _ in password = ""; clientID = existing?.oauthClientID ?? ""; model.accountController.clearConnectionError() }

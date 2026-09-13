@@ -10,6 +10,7 @@ final class AccountController {
     private let executor: ActionExecutor
     private let credentials: any CredentialStore
     private let coordinator: MailSyncCoordinator
+    private let threadService: MailThreadService
     private let attachments: AttachmentStorage
     private let storageAvailable: Bool
     private let providerOverride: (@MainActor (MailAccount) throws -> any ReadOnlyMailProvider)?
@@ -22,6 +23,11 @@ final class AccountController {
     private(set) var moreAvailable: Set<UUID> = []
     private(set) var downloading: Set<UUID> = []
     private(set) var attachmentErrors: [UUID: String] = [:]
+    private(set) var loadingThreads: Set<UUID> = []
+    private(set) var threadErrors: [UUID: String] = [:]
+    private(set) var imagePreviews: [UUID: Data] = [:]
+    private var threadTasks: [UUID: Task<Void, Never>] = [:]
+    private var threadAccountIDs: [UUID: UUID] = [:]
     private var connectionTask: Task<Bool, Never>?
     private var browser: OAuthBrowserSession?
     private var syncTasks: [UUID: Task<Void, Never>] = [:]
@@ -35,6 +41,7 @@ final class AccountController {
         self.executor = executor; self.credentials = credentials; self.storageAvailable = storageAvailable
         self.providerOverride = providerOverride
         coordinator = MailSyncCoordinator(executor: executor)
+        threadService = MailThreadService(executor: executor)
         attachments = AttachmentStorage(root: storageURL.deletingLastPathComponent().appendingPathComponent("Attachments", isDirectory: true))
     }
 
@@ -207,10 +214,13 @@ final class AccountController {
     private func stopRequests(for accountID: UUID) async {
         let sync = syncTasks[accountID]
         let downloads = downloadAccountIDs.filter { $0.value == accountID }.keys.compactMap { downloadTasks[$0] }
+        let threads = threadAccountIDs.filter { $0.value == accountID }.keys.compactMap { threadTasks[$0] }
         sync?.cancel()
+        for task in threads { task.cancel() }
         for task in downloads { task.cancel() }
         await sync?.value
         for task in downloads { await task.value }
+        for task in threads { await task.value }
     }
     func disconnect(_ accountID: UUID) async {
         guard !connecting, !disconnectingIDs.contains(accountID) else { return }
@@ -253,6 +263,26 @@ final class AccountController {
             } catch is CancellationError {} catch { attachmentErrors[attachment.id] = error.localizedDescription }
         }
     }
+    func loadConversation(_ message: MailMessage) {
+        guard !connecting, !isDisconnecting(message.accountID), threadTasks[message.id] == nil,
+              let account = executor.state.accounts.first(where: { $0.id == message.accountID }), account.credentialReference != nil else { return }
+        loadingThreads.insert(message.id); threadAccountIDs[message.id] = message.accountID; threadErrors[message.id] = nil
+        threadTasks[message.id] = Task { @MainActor in
+            defer { loadingThreads.remove(message.id); threadTasks[message.id] = nil; threadAccountIDs[message.id] = nil; onChange?() }
+            do { _ = try await threadService.load(message: message, provider: makeProvider(account)) }
+            catch is CancellationError {} catch { threadErrors[message.id] = error.localizedDescription }
+        }
+    }
+    func cancelConversation(_ id: UUID) { threadTasks[id]?.cancel() }
+    func previewImage(_ attachment: MailAttachment) async {
+        guard let path = attachment.localRelativePath, attachment.mimeType.lowercased().hasPrefix("image/") else { return }
+        do {
+            let png = try await attachments.imagePreview(path)
+            if imagePreviews.count >= 16 { imagePreviews = [:] }
+            imagePreviews[attachment.id] = png
+        } catch { attachmentErrors[attachment.id] = error.localizedDescription }
+    }
+
     func cancelDownload(_ id: UUID) { downloadTasks[id]?.cancel() }
     func reveal(_ attachment: MailAttachment) async {
         guard let relative = attachment.localRelativePath else { return }

@@ -55,12 +55,14 @@ struct AppShell: View {
                             Label("Flag", systemImage: model.selectedMessage?.isFlagged == true ? "flag.fill" : "flag")
                         }.disabled(!model.canMutateSelection).help("Toggle flag")
                     }
+                    Button { model.showingAccountConnection = true } label: { Label("Add Account", systemImage: "person.badge.plus") }.help("Connect Google, Microsoft or iCloud Mail")
                     Button { model.showingHistory = true } label: { Label("Activity", systemImage: "clock.arrow.circlepath") }.help("Action history and Undo")
                     Button { model.showingAssistant.toggle() } label: { Label("Assistant", systemImage: "sparkle.magnifyingglass") }.help("Open optional mail assistant")
                     Button { model.compose() } label: { Label("Compose", systemImage: "square.and.pencil") }.disabled(!model.canCompose).help("New message (⌘N)")
                 }
             }
         }
+        .sheet(isPresented: $model.showingAccountConnection) { AddAccountView(existing: nil).environment(model) }
         .sheet(item: $model.composingDraft) { draft in ComposerView(draft: draft).environment(model) }
         .sheet(isPresented: $model.showingHistory) { ActivityView().environment(model) }
         .sheet(isPresented: $model.showingCategories) { CategoriesView().environment(model) }

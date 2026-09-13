@@ -10,6 +10,8 @@ struct IMAPPart: Sendable, Equatable {
     var isAttachment: Bool
     var isInline: Bool
     var contentID: String?
+    var isPreferredText = true
+    var forwardedHeader: String?
 }
 struct IMAPMessageMetadata: Sendable {
     var uid: UInt32
@@ -17,6 +19,7 @@ struct IMAPMessageMetadata: Sendable {
     var headers: [String: String]
     var date: Date?
     var parts: [IMAPPart]
+    var warnings: [String] = []
 }
 
 enum IMAPMapping {
@@ -64,9 +67,13 @@ enum IMAPMapping {
         for record in response.records {
             var parser = IMAPValueParser(record); let values = try parser.parse()
             guard values.count >= 4, values[2].text?.uppercased() == "FETCH", let fields = values[3].values else { continue }
+            guard fields.count.isMultiple(of: 2) else { throw IMAPError.malformedResponse }
             var uid: UInt32?; var flags: Set<String>?; var i = 0
             while i + 1 < fields.count {
-                if fields[i].text?.uppercased() == "UID" { uid = fields[i + 1].text.flatMap(UInt32.init) }
+                if fields[i].text?.uppercased() == "UID" {
+                    guard let parsedUID = fields[i + 1].text.flatMap(UInt32.init), parsedUID > 0 else { throw IMAPError.malformedResponse }
+                    uid = parsedUID
+                }
                 if fields[i].text?.uppercased() == "FLAGS", let values = fields[i + 1].values { flags = Set(values.compactMap { $0.text?.lowercased() }) }
                 i += 2
             }
@@ -74,7 +81,7 @@ enum IMAPMapping {
         }
         return result
     }
-    static func metadata(_ response: IMAPResponse, uid: UInt32) throws -> IMAPMessageMetadata {
+    static func metadata(_ response: IMAPResponse, uid: UInt32, requireStructure: Bool = true) throws -> IMAPMessageMetadata {
         for record in response.records {
             var parser = IMAPValueParser(record); let values = try parser.parse()
             guard values.count >= 4, values[2].text?.uppercased() == "FETCH", let fields = values[3].values else { continue }
@@ -90,9 +97,12 @@ enum IMAPMapping {
                 i += 2
             }
             guard parsedUID == uid else { continue }
-            guard let body else { throw IMAPError.malformedResponse }
-            let parts = try parseStructure(body, prefix: "", depth: 0)
-            return IMAPMessageMetadata(uid: uid, flags: flags, headers: headers, date: date, parts: parts)
+            var warnings: [String] = []; var parts: [IMAPPart] = []; var budget = 500
+            if let body {
+                do { parts = try parseStructure(body, prefix: "", depth: 0, warnings: &warnings, budget: &budget) }
+                catch { warnings.append("This message has an unsupported MIME structure; its available headers are shown.") }
+            } else if requireStructure { warnings.append("The server did not provide a readable MIME structure; its available headers are shown.") }
+            return IMAPMessageMetadata(uid: uid, flags: flags, headers: headers, date: date, parts: parts, warnings: Array(Set(warnings)).sorted())
         }
         throw IMAPError.malformedResponse
     }
@@ -104,57 +114,90 @@ enum IMAPMapping {
             while i + 1 < fields.count {
                 let key = fields[i].text?.uppercased() ?? ""
                 if key == "UID" { foundUID = fields[i + 1].text.flatMap(UInt32.init) }
-                if key.hasPrefix("BODY[\(section)]") { data = fields[i + 1].bytes ?? fields[i + 1].text.map { Data($0.utf8) } }
+                if key.hasPrefix("BODY[\(section)]") {
+                    switch fields[i + 1] {
+                    case .literal(let bytes): data = bytes
+                    case .string(let text): data = Data(text.utf8)
+                    default: break // NIL is a missing part, not the original text "NIL".
+                    }
+                }
                 i += 2
             }
             if foundUID == uid, let data { return data }
         }
         throw IMAPError.malformedResponse
     }
-    private static func parseStructure(_ values: [IMAPValue], prefix: String, depth: Int) throws -> [IMAPPart] {
-        guard depth < 20, values.count <= 1_000 else { throw IMAPError.unsupportedMessage }
+    private static func parseStructure(_ values: [IMAPValue], prefix: String, depth: Int, warnings: inout [String], budget: inout Int) throws -> [IMAPPart] {
+        guard depth < 20, values.count <= 1_000, budget > 0 else { throw IMAPError.unsupportedMessage }
         if values.first?.values != nil {
-            var result: [IMAPPart] = []; var index = 0
+            var groups: [[IMAPPart]] = []; var index = 0
             while index < values.count, let nested = values[index].values {
-                result += try parseStructure(nested, prefix: prefix.isEmpty ? "\(index + 1)" : "\(prefix).\(index + 1)", depth: depth + 1)
+                do {
+                    groups.append(try parseStructure(nested, prefix: prefix.isEmpty ? "\(index + 1)" : "\(prefix).\(index + 1)", depth: depth + 1, warnings: &warnings, budget: &budget))
+                } catch {
+                    groups.append([])
+                    if warnings.count < 5 { warnings.append("Some MIME parts could not be previewed; readable parts are still available.") }
+                }
                 index += 1
             }
-            guard result.count <= 500 else { throw IMAPError.unsupportedMessage }
-            // A multipart attachment's children must not become automatic text
-            // previews merely because one child happens to be text/plain.
+            let subtype = values.indices.contains(index) ? values[index].text?.lowercased() : nil
+            if subtype == "alternative" {
+                // Choose within this alternative only. A plain-text sibling in
+                // a different multipart/mixed branch must not erase HTML text.
+                let selected = groups.indices.reversed().first { i in groups[i].contains { !$0.isAttachment && $0.isPreferredText && $0.mimeType == "text/plain" } }
+                    ?? groups.indices.reversed().first { i in groups[i].contains { !$0.isAttachment && $0.isPreferredText && $0.mimeType == "text/html" } }
+                for i in groups.indices where i != selected {
+                    groups[i] = groups[i].map { part in var part = part; part.isPreferredText = false; return part }
+                }
+            } else if subtype == "related" {
+                let parameters = values.indices.contains(index + 1) ? parameters(values[index + 1]) : [:]
+                let start = MIMEParser.normalizedContentID(parameters["start"])
+                let selected = start.flatMap { id in groups.firstIndex { $0.contains { $0.contentID == id } } } ?? 0
+                for i in groups.indices where i != selected {
+                    groups[i] = groups[i].map { part in var part = part; part.isAttachment = true; part.isInline = true; part.isPreferredText = false; return part }
+                }
+            }
+            var result = groups.flatMap { $0 }
             if values.indices.contains(index + 2), let disposition = values[index + 2].values,
                disposition.first?.text?.lowercased() == "attachment" {
-                result = result.map { part in var part = part; part.isAttachment = true; return part }
+                result = result.map { part in var part = part; part.isAttachment = true; part.isPreferredText = false; return part }
             }
             return result
         }
-        guard values.count >= 7, let type = values[0].text?.lowercased(), let subtype = values[1].text?.lowercased(), let size = values[6].text.flatMap(Int.init), size >= 0 else { throw IMAPError.malformedResponse }
+        guard values.count >= 7, let type = values[0].text?.lowercased(), type != "nil", let subtype = values[1].text?.lowercased(), subtype != "nil",
+              let size = values[6].text.flatMap(Int.init), size >= 0, size <= 1_024 * 1_024 * 1_024 else { throw IMAPError.malformedResponse }
+        budget -= 1
         let params = parameters(values[2]); let encoding = values[5].text?.lowercased() ?? "7bit"
-        let dispositionIndex = type == "text" ? 9 : (type == "message" && subtype == "rfc822" ? 11 : 8)
+        let isForward = type == "message" && subtype == "rfc822"
+        let dispositionIndex = type == "text" ? 9 : (isForward ? 11 : 8)
         let disposition = values.indices.contains(dispositionIndex) ? values[dispositionIndex].values : nil
         let dispositionKind = disposition?.first?.text?.lowercased()
         let dispositionParams = disposition.flatMap { $0.count > 1 ? parameters($0[1]) : nil } ?? [:]
-        let name = dispositionParams["filename"] ?? params["name"]
-        let content = values[3].text.flatMap { $0.uppercased() == "NIL" ? nil : $0.trimmingCharacters(in: CharacterSet(charactersIn: "<>")) }
-        return [IMAPPart(section: prefix.isEmpty ? "1" : prefix, mimeType: "\(type)/\(subtype)", charset: params["charset"], encoding: encoding, size: size, name: name.map(MIMEParser.decodeHeader), isAttachment: dispositionKind == "attachment" || name != nil || type != "text", isInline: dispositionKind == "inline", contentID: content)]
+        var name = dispositionParams["filename"] ?? params["name"]
+        let content = MIMEParser.normalizedContentID(values[3].text)
+        if isForward {
+            let envelope = values.indices.contains(7) ? values[7].values : nil
+            let subject = envelope.flatMap { $0.count > 1 ? $0[1].text : nil }.flatMap { $0.uppercased() == "NIL" ? nil : MIMEParser.decodeHeader($0) }
+            if name == nil, dispositionKind != "attachment", (prefix.isEmpty || dispositionKind == "inline"), values.indices.contains(8), let body = values[8].values {
+                let containerSection = prefix.isEmpty ? "1" : prefix
+                let innerPrefix = body.first?.values == nil ? containerSection + ".1" : containerSection
+                var nested = try parseStructure(body, prefix: innerPrefix, depth: depth + 1, warnings: &warnings, budget: &budget)
+                if let first = nested.firstIndex(where: { !$0.isAttachment && $0.isPreferredText }) {
+                    nested[first].forwardedHeader = subject.map { "Forwarded message: \($0)" } ?? "Forwarded message"
+                }
+                return nested
+            }
+            if name == nil { name = subject.map { "Forwarded — \(String($0.prefix(160))).eml" } ?? "Forwarded message.eml" }
+        }
+        let supportedText = type == "text" && ["plain", "html"].contains(subtype)
+        return [IMAPPart(section: prefix.isEmpty ? "1" : prefix, mimeType: "\(type)/\(subtype)", charset: params["charset"], encoding: encoding, size: size, name: name.map(MIMEParser.decodeHeader), isAttachment: dispositionKind == "attachment" || name != nil || !supportedText, isInline: dispositionKind == "inline" || (content != nil && dispositionKind != "attachment"), contentID: content)]
     }
     private static func parameters(_ value: IMAPValue) -> [String: String] {
         guard let list = value.values else { return [:] }
         var result: [String: String] = [:]; var i = 0
         while i + 1 < list.count {
-            if let key = list[i].text?.lowercased(), let value = list[i + 1].text { result[key] = value }; i += 2
+            if let key = list[i].text?.lowercased(), let value = list[i + 1].text, result[key] == nil { result[key] = value }; i += 2
         }
-        for (key, value) in Array(result) where key.hasSuffix("*") {
-            let pieces = value.split(separator: "'", maxSplits: 2, omittingEmptySubsequences: false)
-            if pieces.count == 3 {
-                let encoded = String(pieces[2]); var data = Data(); let bytes = Array(encoded.utf8); var offset = 0
-                while offset < bytes.count {
-                    if bytes[offset] == 37, offset + 2 < bytes.count, let number = UInt8(String(decoding: bytes[(offset + 1)...(offset + 2)], as: UTF8.self), radix: 16) { data.append(number); offset += 3 }
-                    else { data.append(bytes[offset]); offset += 1 }
-                }
-                result[String(key.dropLast())] = MIMEParser.decodeText(data, charset: String(pieces[0]))
-            }
-        }
-        return result
+        return MIMEParser.decodeParameters(result)
     }
 }

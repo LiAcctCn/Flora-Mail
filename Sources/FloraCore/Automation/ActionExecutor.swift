@@ -208,7 +208,40 @@ public final class ActionExecutor {
                 candidate.messages[index].isFlagged = update.isFlagged
             }
         }
-        for var message in page.messages {
+        mergeRemoteMessages(page.messages, accountID: accountID, into: &candidate)
+        candidate.accounts[accountIndex].syncState.checkpoint = page.checkpoint
+        candidate.accounts[accountIndex].syncState.errorMessage = nil
+        try repository.save(candidate); state = candidate
+    }
+
+    /// A conversation read is a separate transaction from mailbox pagination.
+    /// Missing messages are not interpreted as deletions, and neither successful
+    /// nor failed retrieval moves the account's durable synchronization cursor.
+    public func commitRemoteThread(_ thread: MailThread, sourceMessageID: UUID) throws {
+        guard let source = state.messages.first(where: { $0.id == sourceMessageID }) else { throw MailThreadError.sourceUnavailable }
+        guard let account = state.accounts.first(where: { $0.id == source.accountID && $0.isReadOnly }) else { throw MailSyncError.accountNotFound }
+        guard account.status != .disconnected else { throw MailSyncError.disconnected }
+        guard let providerThreadID = source.providerThreadID, !providerThreadID.isEmpty,
+              thread.id == source.threadID, !thread.messages.isEmpty,
+              thread.messages.contains(where: { $0.providerID == source.providerID }) else { throw MailThreadError.invalidThread }
+        guard thread.messages.count <= MailThreadService.maximumMessages else { throw MailThreadError.tooLarge }
+        guard thread.messages.allSatisfy({ $0.accountID == account.id }) else { throw MailSyncError.accountMismatch }
+        var textBytes = 0
+        for message in thread.messages {
+            guard !message.providerID.isEmpty, message.providerID.utf8.count <= 8_192,
+                  message.providerThreadID == providerThreadID, message.threadID == source.threadID else { throw MailThreadError.invalidThread }
+            textBytes += message.body.utf8.count + (message.htmlBody?.utf8.count ?? 0) + message.subject.utf8.count
+            guard textBytes <= MailThreadService.maximumTextBytes else { throw MailThreadError.tooLarge }
+        }
+        var candidate = state
+        mergeRemoteMessages(thread.messages, accountID: account.id, into: &candidate)
+        try repository.save(candidate); state = candidate
+    }
+
+    /// Both sync pages and explicit conversation reads use identical identity,
+    /// annotation, attachment and source-cache preservation rules.
+    private func mergeRemoteMessages(_ messages: [MailMessage], accountID: UUID, into candidate: inout AppSnapshot) {
+        for var message in messages {
             let canonicalID = StableMailIdentity.message(accountID: accountID, providerID: message.providerID)
             message.id = canonicalID
             message.threadID = StableMailIdentity.thread(accountID: accountID, providerID: message.providerThreadID ?? message.providerID)
@@ -222,6 +255,16 @@ public final class ActionExecutor {
                 // Keep the ID already referenced by local annotations/drafts even
                 // when importing a store written by an earlier adapter revision.
                 message.id = old.id; message.categoryID = old.categoryID
+                if message.body.isEmpty, message.htmlBody == nil, !message.contentWarnings.isEmpty,
+                   !old.body.isEmpty || old.htmlBody?.isEmpty == false {
+                    // A failed body read is not evidence that previously cached
+                    // content was removed. Retain it with an explicit freshness
+                    // warning while still accepting fresh envelope and flag data.
+                    message.body = old.body; message.htmlBody = old.htmlBody; message.attachments = old.attachments
+                    message.contentWarnings = Array(Set(message.contentWarnings + old.contentWarnings + [
+                        "Showing previously cached content and attachments because the latest message body is unavailable."
+                    ])).sorted()
+                }
                 let sameSource = Self.sameAIContent(old, message)
                 if !sameSource {
                     candidate.summaries.removeAll { $0.messageID == old.id }
@@ -239,9 +282,6 @@ public final class ActionExecutor {
                 candidate.messages.append(message)
             }
         }
-        candidate.accounts[accountIndex].syncState.checkpoint = page.checkpoint
-        candidate.accounts[accountIndex].syncState.errorMessage = nil
-        try repository.save(candidate); state = candidate
     }
 
     public func markAttachmentDownloaded(messageID: UUID, attachmentID: UUID, relativePath: String) throws {

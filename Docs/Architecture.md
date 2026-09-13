@@ -103,7 +103,7 @@ No rule editor, scheduler, learned authorization, or background automation execu
 
 ## Message and attachment safety
 
-Mail bodies are decoded into inert text. Gmail multipart payloads and iCloud MIME use the shared bounded MIME decoder; Graph supplies normalized text or HTML. HTML is retained as source where available but displayed through an inert text projection, with no browser, script execution, remote image loading, or HTML-import networking. Common character sets, encoded headers, quoted-printable/base64, Unicode and quoted replies are handled; layout fidelity and inline-image display remain deferred.
+Mail bodies are decoded into inert text. Gmail multipart payloads and iCloud MIME use the shared bounded MIME decoder; Graph supplies normalized text or HTML. HTML is retained as source and always has an inert text projection. The optional native WebKit renderer uses a nonpersistent store, disabled mail JavaScript, content rules, restrictive CSP and a navigation delegate. It permits only explicitly downloaded/re-encoded inline PNG images through an app-owned scheme. Common character sets, encoded headers, quoted-printable/base64, Unicode, quoted replies and nested MIME are handled; encrypted content and universal layout fidelity are not supported.
 
 Attachment metadata is separate from payloads. Requested content is limited to 20 MiB for REST providers; IMAP requires encoded payloads below 25 MiB, and the shared local store enforces a 25 MiB ceiling. Downloads are written under controlled application storage using account/message/attachment identities, with sanitized filenames and relative-path validation. Download state persists only after the file is successfully saved. Demo attachment metadata has no remote payload. Sensitive mail/cache JSON is local and access-restricted, but the prototype does not provide an encrypted high-volume database.
 
@@ -114,6 +114,6 @@ The REST transport allows only fixed official HTTPS hosts, rejects redirects, an
 1. Verify each live provider with controlled accounts, including expired authorization, large folders, moved/deleted mail, and checkpoint recovery; evaluate Local AI on intentionally selected synchronized messages.
 2. Broaden MIME/encoding and model-quality fixture coverage, including long conversations and attachment edge cases.
 3. Replace whole-file persistence when mailbox scale warrants indexed storage and incremental updates; add a local embedding index only with explicit account scope.
-4. Improve safe HTML layout/inline-image presentation without introducing active content or remote tracking.
+4. Expand safe HTML compatibility fixtures without introducing active content or remote tracking.
 5. Consider real provider mutations only in a separately authorized phase, preserving preview, permission checks and accurate action history.
 6. Add explicit research configuration and privacy-minimized evaluation instrumentation only after defining the study.

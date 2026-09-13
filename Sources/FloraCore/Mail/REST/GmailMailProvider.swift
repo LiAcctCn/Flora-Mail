@@ -80,16 +80,36 @@ public final class GmailMailProvider: ReadOnlyMailProvider {
         return MailSyncPage(messages: messages, checkpoint: SyncCheckpoint(opaqueState: try state.encoded(), initialComplete: true), hasMore: hasMore, deletedProviderMessageIDs: removed)
     }
     private func message(id: String) async throws -> MailMessage {
-        var wire = try MailHTTP.decode(GmailMessageDTO.self, await get(["messages", id], query: [URLQueryItem(name: "format", value: "full")]))
-        if let payload = wire.payload { wire.payload = try await hydrateText(payload, messageID: id, depth: 0) }
-        let mapped = try GmailMapping.message(wire, accountID: accountID)
+        let wire = try MailHTTP.decode(GmailMessageDTO.self, await get(["messages", id], query: [URLQueryItem(name: "format", value: "full")]))
+        guard wire.id == id else { throw RemoteMailError.malformedResponse }
+        return try await normalizedMessage(wire)
+    }
+    private func normalizedMessage(_ original: GmailMessageDTO) async throws -> MailMessage {
+        var wire = original
+        var warnings: [String] = []
+        if let payload = wire.payload {
+            do { wire.payload = try await hydrateText(payload, messageID: wire.id, depth: 0) }
+            catch where RESTMailContent.isBodyFailure(error) {
+                wire.payload = nil
+                warnings.append(RESTMailContent.unavailableWarning)
+            }
+        }
+        var mapped: MailMessage
+        do { mapped = try GmailMapping.message(wire, accountID: accountID) }
+        catch where RESTMailContent.isBodyFailure(error) {
+            wire.payload = nil
+            mapped = try GmailMapping.message(wire, accountID: accountID)
+        }
+        mapped.contentWarnings = Array(Set(mapped.contentWarnings + warnings)).sorted()
         threadIDs[mapped.threadID] = wire.threadId
         return mapped
     }
     private func hydrateText(_ part: GmailPart, messageID: String, depth: Int) async throws -> GmailPart {
         guard depth < 24 else { throw RemoteMailError.unsupportedContent }
         var result = part
-        if (part.filename ?? "").isEmpty, ["text/plain", "text/html"].contains(part.mimeType?.lowercased() ?? ""),
+        let disposition = part.headerMap["content-disposition"] ?? ""
+        guard (part.filename ?? "").isEmpty, !disposition.lowercased().hasPrefix("attachment") else { return result }
+        if ["text/plain", "text/html"].contains(part.mimeType?.lowercased() ?? ""),
            let attachment = part.body?.attachmentId, part.body?.data == nil {
             guard (part.body?.size ?? 0) <= MIMEParser.maximumTextBytes else { return result }
             let body = try MailHTTP.decode(GmailBody.self, await get(["messages", messageID, "attachments", attachment]))
@@ -101,18 +121,28 @@ public final class GmailMailProvider: ReadOnlyMailProvider {
         }
         return result
     }
+    public func fetchThread(message source: MailMessage) async throws -> MailThread {
+        guard source.accountID == accountID, let remote = source.providerThreadID,
+              source.threadID == StableMailIdentity.thread(accountID: accountID, providerID: remote) else { throw RemoteMailError.invalidConfiguration }
+        let thread = try await fetchThread(providerThreadID: remote)
+        guard thread.messages.contains(where: { $0.providerID == source.providerID }) else { throw RemoteMailError.messageUnavailable }
+        return thread
+    }
     public func fetchThread(id: UUID) async throws -> MailThread {
         guard let remote = threadIDs[id] else { throw RemoteMailError.messageUnavailable }
         return try await fetchThread(providerThreadID: remote)
     }
     public func fetchThread(providerThreadID: String) async throws -> MailThread {
         let thread = try MailHTTP.decode(GmailThreadDTO.self, await get(["threads", providerThreadID], query: [URLQueryItem(name: "format", value: "full")]))
+        guard (thread.messages?.count ?? 0) <= 500 else { throw RemoteMailError.responseTooLarge }
         var mapped: [MailMessage] = []
-        for var wire in thread.messages ?? [] {
-            if let payload = wire.payload { wire.payload = try await hydrateText(payload, messageID: wire.id, depth: 0) }
-            mapped.append(try GmailMapping.message(wire, accountID: accountID))
+        for wire in thread.messages ?? [] {
+            try Task.checkCancellation()
+            guard wire.threadId == providerThreadID else { throw RemoteMailError.malformedResponse }
+            mapped.append(try await normalizedMessage(wire))
+            _ = try RESTMailContent.validateThread(mapped, accountID: accountID, providerThreadID: providerThreadID)
         }
-        return MailThread(id: StableMailIdentity.thread(accountID: accountID, providerID: providerThreadID), messages: mapped.sorted { $0.date < $1.date })
+        return try RESTMailContent.validateThread(mapped, accountID: accountID, providerThreadID: providerThreadID)
     }
     public func downloadAttachment(message: MailMessage, attachment: MailAttachment) async throws -> Data {
         guard message.accountID == accountID, let id = attachment.providerID, message.attachments.contains(where: { $0.id == attachment.id && $0.providerID == id }) else { throw RemoteMailError.invalidConfiguration }
@@ -184,6 +214,18 @@ struct GmailMessageDTO: Decodable {
     let internalDate: String?
     let snippet: String?
     var payload: GmailPart?
+    let envelopeHeaders: [GmailHeader]
+    private enum CodingKeys: String, CodingKey { case id, threadId, labelIds, internalDate, snippet, payload }
+    private struct PayloadEnvelope: Decodable { let headers: [GmailHeader]? }
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id); threadId = try values.decode(String.self, forKey: .threadId)
+        labelIds = try values.decodeIfPresent([String].self, forKey: .labelIds)
+        internalDate = try values.decodeIfPresent(String.self, forKey: .internalDate)
+        snippet = try values.decodeIfPresent(String.self, forKey: .snippet)
+        envelopeHeaders = (try? values.decodeIfPresent(PayloadEnvelope.self, forKey: .payload))?.headers ?? []
+        payload = try? values.decodeIfPresent(GmailPart.self, forKey: .payload)
+    }
 }
 struct GmailThreadDTO: Decodable { let messages: [GmailMessageDTO]? }
 
@@ -196,31 +238,44 @@ enum GmailMapping {
         return fallback
     }
     static func message(_ wire: GmailMessageDTO, accountID: UUID) throws -> MailMessage {
-        guard !wire.id.isEmpty, !wire.threadId.isEmpty, let payload = wire.payload else { throw RemoteMailError.malformedResponse }
+        guard !wire.id.isEmpty, !wire.threadId.isEmpty else { throw RemoteMailError.malformedResponse }
+        let payload = wire.payload ?? GmailPart(partId: nil, mimeType: "text/plain", filename: nil, headers: wire.envelopeHeaders, body: nil, parts: nil)
         let headers = payload.headerMap
+        var warnings: [String] = wire.payload == nil ? [RESTMailContent.unavailableWarning] : []
         var plain: [String] = [], html: [String] = [], attachments: [MailAttachment] = []
         func walk(_ part: GmailPart, depth: Int) throws {
             guard depth < 24, attachments.count < 200 else { throw RemoteMailError.unsupportedContent }
             let mime = part.mimeType?.lowercased() ?? "application/octet-stream"
             let header = part.headerMap
-            let filename = MIMEParser.decodeHeader(part.filename ?? "")
+            let disposition = header["content-disposition"] ?? ""
+            let typeParameters = MIMEParser.headerParameters(header["content-type"] ?? "")
+            let dispositionParameters = MIMEParser.headerParameters(disposition)
+            let filename = MIMEParser.decodeHeader(part.filename.flatMap { $0.isEmpty ? nil : $0 } ?? dispositionParameters["filename"] ?? typeParameters["name"] ?? "")
             let isAttachment = !filename.isEmpty || header["content-disposition"]?.lowercased().hasPrefix("attachment") == true
             if isAttachment || (!mime.hasPrefix("multipart/") && mime != "text/plain" && mime != "text/html") {
                 let remote = part.body?.attachmentId ?? part.partId.map { "inline-part:\($0)" }
                 if let remote {
-                    attachments.append(MailAttachment(id: StableMailIdentity.message(accountID: accountID, providerID: "attachment:\(wire.id):\(remote)"), name: filename.isEmpty ? "Unnamed attachment" : filename, size: max(0, part.body?.size ?? 0), providerID: remote, mimeType: mime, isInline: header["content-disposition"]?.lowercased().hasPrefix("inline") == true, contentID: header["content-id"]))
+                    attachments.append(MailAttachment(id: StableMailIdentity.message(accountID: accountID, providerID: "attachment:\(wire.id):\(remote)"), name: filename.isEmpty ? "Unnamed attachment" : filename, size: max(0, part.body?.size ?? 0), providerID: remote, mimeType: mime, isInline: header["content-disposition"]?.lowercased().hasPrefix("inline") == true, contentID: MIMEParser.normalizedContentID(header["content-id"])))
                 }
-            } else if let encoded = part.body?.data, let bytes = MIMEParser.base64URLDecode(encoded) {
-                let charset = header["content-type"]?.components(separatedBy: ";").dropFirst().first(where: { $0.lowercased().contains("charset=") })?.components(separatedBy: "=").last?.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                // Attached MIME trees are not part of the original visible body.
+                // Keep only metadata until the user requests their contents.
+                return
+            } else if let encoded = part.body?.data {
+                guard let bytes = MIMEParser.base64URLDecode(encoded) else { throw RemoteMailError.unsupportedContent }
+                let charset = header["content-type"].map(MIMEParser.headerParameters)?["charset"]
+                if bytes.count > MIMEParser.maximumTextBytes { warnings.append("A text part exceeded the 512 KiB preview limit; its remaining content was not included.") }
                 let text = MIMEParser.decodeText(bytes, charset: charset)
                 if mime == "text/plain" { plain.append(text) }
                 if mime == "text/html" { html.append(text) }
+            } else if part.body?.attachmentId != nil, mime == "text/plain" || mime == "text/html" {
+                warnings.append("A text part was not downloaded because it exceeded the 512 KiB preview limit.")
             }
             for child in part.parts ?? [] { try walk(child, depth: depth + 1) }
         }
         try walk(payload, depth: 0)
-        let originalHTML = html.isEmpty ? nil : String(html.joined(separator: "\n").prefix(MIMEParser.maximumTextBytes))
-        let body = plain.isEmpty ? originalHTML.map(MIMEParser.htmlToText) ?? "Message body unavailable or in an unsupported format." : String(plain.joined(separator: "\n").prefix(MIMEParser.maximumTextBytes))
+        let originalHTML = html.isEmpty ? nil : RESTMailContent.limitText(html.joined(separator: "\n"), warnings: &warnings)
+        let body = plain.isEmpty ? originalHTML.map(MIMEParser.htmlToText) ?? "" : RESTMailContent.limitText(plain.joined(separator: "\n"), warnings: &warnings)
+        if plain.isEmpty && originalHTML == nil && warnings.isEmpty { warnings.append("This message has no supported text body. Its available attachments are listed separately.") }
         let labels = wire.labelIds ?? []
         return MailMessage(id: StableMailIdentity.message(accountID: accountID, providerID: wire.id), providerID: wire.id, accountID: accountID,
                            threadID: StableMailIdentity.thread(accountID: accountID, providerID: wire.threadId),
@@ -228,6 +283,6 @@ enum GmailMapping {
                            to: MIMEParser.addresses(headers["to"] ?? ""), subject: headers["subject"] ?? "(No subject)", body: body,
                            date: wire.internalDate.flatMap(Double.init).map { Date(timeIntervalSince1970: $0 / 1000) } ?? MIMEParser.date(headers["date"]) ?? Date(timeIntervalSince1970: 0),
                            folder: role(labels: labels) ?? .archive, isRead: !labels.contains("UNREAD"), isFlagged: labels.contains("STARRED"), attachments: attachments,
-                           providerThreadID: wire.threadId, providerFolderIDs: labels, htmlBody: originalHTML, cc: MIMEParser.addresses(headers["cc"] ?? ""), isImportant: labels.contains("IMPORTANT"))
+                           providerThreadID: wire.threadId, providerFolderIDs: labels, htmlBody: originalHTML, cc: MIMEParser.addresses(headers["cc"] ?? ""), isImportant: labels.contains("IMPORTANT"), contentWarnings: warnings)
     }
 }

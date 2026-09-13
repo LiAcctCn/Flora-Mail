@@ -58,7 +58,7 @@ public enum IMAPError: MailSyncFailure, LocalizedError, Sendable, Equatable {
 /// cannot change even per-user flags, and BODY.PEEK never marks mail as read.
 public enum IMAPCommand: Sendable {
     case capability, login(IMAPCredential), list, examine(String), search(since: Date, minimumUID: UInt32?)
-    case flags(uids: [UInt32]), metadata(uid: UInt32), body(uid: UInt32, section: String, maximumBytes: Int), logout
+    case searchThread(anchor: String), headers(uid: UInt32), flags(uids: [UInt32]), metadata(uid: UInt32), body(uid: UInt32, section: String, maximumBytes: Int), logout
     public func wireText() throws -> String {
         switch self {
         case .capability: return "CAPABILITY"
@@ -71,6 +71,14 @@ public enum IMAPCommand: Sendable {
             let date = DateFormatter(); date.locale = Locale(identifier: "en_US_POSIX"); date.timeZone = TimeZone(secondsFromGMT: 0); date.dateFormat = "dd-MMM-yyyy"
             let range = minimum.map { "UID \($0):4294967295 " } ?? ""
             return "UID SEARCH \(range)SINCE \(date.string(from: since))"
+        case .searchThread(let anchor):
+            guard anchor.hasPrefix("<"), anchor.hasSuffix(">"), anchor.contains("@"), anchor.utf8.count <= 998,
+                  !anchor.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || $0.value < 33 || $0.value > 126 }) else { throw IMAPError.invalidConfiguration }
+            let quoted = try Self.quote(anchor)
+            return "UID SEARCH OR HEADER Message-ID \(quoted) OR HEADER References \(quoted) HEADER In-Reply-To \(quoted)"
+        case .headers(let uid):
+            guard uid > 0 else { throw IMAPError.invalidConfiguration }
+            return "UID FETCH \(uid) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)]<0.65536>)"
         case .flags(let uids):
             guard !uids.isEmpty, uids.count <= 500, uids.allSatisfy({ $0 > 0 }) else { throw IMAPError.invalidConfiguration }
             return "UID FETCH \(uids.map(String.init).joined(separator: ",")) (UID FLAGS)"
@@ -148,7 +156,7 @@ struct IMAPValueParser {
             }
             let start = index
             // Bracketed FETCH item names may include parenthesized header fields.
-            if bytes[index...].starts(with: Array("BODY[".utf8)) {
+            if bytes[index...].prefix(5).map({ (97...122).contains($0) ? $0 - 32 : $0 }) == Array("BODY[".utf8) {
                 while index < bytes.count && bytes[index] != 93 { index += 1 }
                 guard index < bytes.count else { throw IMAPError.malformedResponse }; index += 1
                 while index < bytes.count && ![32, 13, 10, 41].contains(bytes[index]) { index += 1 }

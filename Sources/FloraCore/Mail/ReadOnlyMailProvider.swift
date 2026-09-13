@@ -64,10 +64,18 @@ public protocol ReadOnlyMailProvider: MailProvider {
     var accountID: UUID { get }
     func fetchRemoteFolders() async throws -> [MailFolderDescriptor]
     func fetchPage(_ request: MailSyncRequest) async throws -> MailSyncPage
+    func fetchThread(message: MailMessage) async throws -> MailThread
     func downloadAttachment(message: MailMessage, attachment: MailAttachment) async throws -> Data
 }
 
 public extension ReadOnlyMailProvider {
+    /// The persisted source carries its provider thread ID across adapter
+    /// recreation. Providers must explicitly implement remote conversation reads;
+    /// the legacy UUID lookup is not a reliable substitute after an app restart.
+    func fetchThread(message: MailMessage) async throws -> MailThread {
+        guard message.accountID == accountID else { throw MailSyncError.accountMismatch }
+        throw MailThreadError.unavailable
+    }
     func fetchFolders() async throws -> [MailFolder] {
         let roles = try await fetchRemoteFolders().compactMap(\.role)
         return MailFolder.allCases.filter { roles.contains($0) }

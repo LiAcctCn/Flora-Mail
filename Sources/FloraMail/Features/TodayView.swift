@@ -24,6 +24,16 @@ struct TodayView: View {
                     Label(model.state.preferences.showDemoAccounts ? "Demo mailbox" : "Cached mail · Read-only", systemImage: "internaldrive").font(.caption).foregroundStyle(.secondary)
                         .padding(.horizontal, 12).padding(.vertical, 7).background(.quaternary.opacity(0.5), in: Capsule())
                 }
+                if !model.state.accounts.contains(where: { $0.providerType != .demo }) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Welcome to Flora Mail").font(.headline)
+                            Text("Connect your mail account, or explore the fictional inbox in Demo Mode.").font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Add Account") { model.showingAccountConnection = true }.buttonStyle(.borderedProminent)
+                    }.padding(18).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+                }
                 HStack(spacing: 16) {
                     metric("Flagged emails", value: inbox.filter(\.isFlagged).count, icon: "flag", destination: .important)
                     metric("\(model.aiEnabled ? "Action suggestions" : "Unread emails")", value: model.aiEnabled ? attentionIDs.count : inbox.filter { !$0.isRead }.count, icon: "arrowshape.turn.up.left", destination: .folder(.inbox))

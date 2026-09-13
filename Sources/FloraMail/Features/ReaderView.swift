@@ -20,6 +20,7 @@ struct ReaderView: View {
     @State private var activeSourceIdentity = ""
     @State private var wasCancelled = false
     @State private var showOriginal = false
+    @State private var showHTML = false
     @State private var originalVisibilityWasChosen = false
     @State private var showSources = false
     @State private var ignoredClassification = false
@@ -78,7 +79,7 @@ struct ReaderView: View {
                         }
                     }
                 }
-                if threadMessages.count > 1 { threadSection }
+                if threadMessages.count > 1 || isReadOnly { threadSection }
                 Divider()
                 HStack(spacing: 12) {
                     Button { model.compose(replyTo: currentMessage) } label: {
@@ -108,6 +109,7 @@ struct ReaderView: View {
         }
         .onChange(of: message.id) { _, _ in
             showOriginal = !model.aiEnabled
+            showHTML = false
             originalVisibilityWasChosen = false
             showSources = false
         }
@@ -336,6 +338,20 @@ struct ReaderView: View {
                 Text(currentMessage.htmlBody == nil ? "Original content" : "Safe text from original HTML").font(.caption).foregroundStyle(.secondary)
             }
             if showOriginal || !model.aiEnabled {
+                ForEach(currentMessage.contentWarnings, id: \.self) { warning in
+                    Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                }
+                if let html = currentMessage.htmlBody {
+                    Toggle("Formatted HTML", isOn: $showHTML).toggleStyle(.switch).controlSize(.small)
+                    if showHTML {
+                        let inline = Dictionary(currentMessage.attachments.compactMap { attachment -> (String, Data)? in
+                            guard let cid = attachment.contentID, let image = model.accountController.imagePreviews[attachment.id] else { return nil }
+                            return (cid, image)
+                        }, uniquingKeysWith: { first, _ in first })
+                        SafeHTMLView(html: html, inlineImages: inline).frame(minHeight: 300, idealHeight: 450, maxHeight: 600)
+                        Text("Scripts, links and remote resources are blocked. Download an inline image and select Preview Image to include it.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Text(currentMessage.body)
                     .font(.body)
                     .lineSpacing(5)
@@ -343,7 +359,7 @@ struct ReaderView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("originalMessageBody")
                 if let html = currentMessage.htmlBody {
-                    Text("HTML is displayed as text. Scripts and remote images are not loaded.")
+                    Text("The plain-text original stays available. Scripts and remote images are blocked in formatted HTML.")
                         .font(.caption).foregroundStyle(.secondary)
                     DisclosureGroup("Show HTML Source") {
                         // Text renders markup literally; this disclosure never
@@ -412,6 +428,9 @@ struct ReaderView: View {
                             .accessibilityLabel("Cancel download of \(attachment.name)")
                     } else {
                         if downloaded {
+                            if attachment.mimeType.lowercased().hasPrefix("image/") {
+                                Button("Preview Image") { Task { await model.accountController.previewImage(attachment) } }.controlSize(.small)
+                            }
                             Button("Show in Finder") {
                                 Task { await model.accountController.reveal(attachment) }
                             }
@@ -428,6 +447,9 @@ struct ReaderView: View {
                         }
                     }
                 }
+            }
+            if let png = model.accountController.imagePreviews[attachment.id], let image = NSImage(data: png) {
+                Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: 450, maxHeight: 280).accessibilityLabel(attachment.name)
             }
             if let error {
                 Label(error, systemImage: "exclamationmark.circle")
@@ -495,6 +517,18 @@ struct ReaderView: View {
     private var threadSection: some View {
         DisclosureGroup("\(isReadOnly ? "Cached conversation" : "Conversation") · \(threadMessages.count) messages") {
             VStack(alignment: .leading, spacing: 8) {
+                if isReadOnly {
+                    HStack {
+                        if model.accountController.loadingThreads.contains(currentMessage.id) {
+                            ProgressView().controlSize(.small)
+                            Button("Cancel") { model.accountController.cancelConversation(currentMessage.id) }
+                        } else {
+                            Button("Load Full Conversation") { model.accountController.loadConversation(currentMessage) }.disabled(!canDownloadAttachments)
+                        }
+                        Text("Up to 500 messages; cached messages stay available offline.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let error = model.accountController.threadErrors[currentMessage.id] { Text(error).font(.caption).foregroundStyle(.secondary) }
+                }
                 ForEach(threadMessages) { related in
                     Button { model.openMessage(related.id) } label: {
                         HStack {

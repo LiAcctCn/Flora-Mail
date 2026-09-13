@@ -29,6 +29,7 @@ final class AppModel {
         didSet { statusOffersUndo = false }
     }
     private(set) var statusOffersUndo = false
+    var showingAccountConnection = false
     var showingHistory = false
     var showingCategories = false
     var showingAssistant = false

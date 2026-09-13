@@ -8,6 +8,7 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
     private let configuration: OAuthClientConfiguration
     private let reader: AuthorizedMailReader
     private var folderCache: [MailFolderDescriptor] = []
+    private var hasDiscoveredFolders = false
     private var threadIDs: [UUID: String] = [:]
     private let immutablePreference = "IdType=\"ImmutableId\""
     private static let messageFields = "id,conversationId,from,toRecipients,ccRecipients,subject,body,receivedDateTime,sentDateTime,parentFolderId,isRead,flag,importance,hasAttachments,isDraft"
@@ -24,10 +25,11 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
         return try await reader.get(url, headers: ["Prefer": preference])
     }
     /// Continuation URLs are untrusted provider data, restricted to this mailbox's v1 API.
-    private func nextURL(_ raw: String, expectedPath: String? = nil) throws -> URL {
+    private func nextURL(_ raw: String, expectedURL: URL? = nil) throws -> URL {
         guard raw.utf8.count < 32_768, let result = URL(string: raw), result.host == "graph.microsoft.com",
-              result.path.hasPrefix("/v1.0/me/"), expectedPath == nil || result.path == expectedPath else { throw RemoteMailError.malformedResponse }
+              result.path.lowercased().hasPrefix("/v1.0/me/") else { throw RemoteMailError.malformedResponse }
         try SecureMailHTTPClient.validate(result)
+        if let expectedURL { try GraphResourcePath.validate(result, matches: expectedURL) }
         return result
     }
     public func fetchAccounts() async throws -> [MailAccount] {
@@ -62,43 +64,60 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
                     if !visited.contains(child.absoluteString), !queue.contains(child) { queue.append(child) }
                 }
             }
-            if let next = page.nextLink { queue.append(try nextURL(next, expectedPath: current.path)) }
+            if let next = page.nextLink { queue.append(try nextURL(next, expectedURL: current)) }
         }
         folderCache = values.values.map { MailFolderDescriptor(id: $0.id, accountID: accountID, name: $0.displayName, role: roles[$0.id]) }.sorted { lhs, rhs in
             if lhs.role == .inbox { return rhs.role != .inbox }; if rhs.role == .inbox { return false }; return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+        hasDiscoveredFolders = true
         return folderCache
     }
     public func fetchPage(_ request: MailSyncRequest) async throws -> MailSyncPage {
         try Task.checkCancellation()
         var state = try GraphSyncState.decode(request.checkpoint?.opaqueState)
-        if state.folders.isEmpty || state.index == 0 {
-            let folders = folderCache.isEmpty ? try await fetchRemoteFolders() : folderCache
-            let oldIDs = Set(state.folders.map(\.id))
-            state.folders.append(contentsOf: folders.filter { !oldIDs.contains($0.id) }.map { GraphSyncFolder(id: $0.id, role: $0.role) })
-            if state.since == nil { state.since = request.since }
-        }
-        guard !state.folders.isEmpty else {
+        let discovered = hasDiscoveredFolders ? folderCache : try await fetchRemoteFolders()
+        try state.reconcileFolders(discovered)
+        if state.since == nil { state.since = request.since }
+        guard !state.folders.isEmpty, state.index < state.folders.count else {
+            state.index = 0
             return MailSyncPage(messages: [], checkpoint: SyncCheckpoint(opaqueState: try state.encoded(), initialComplete: true))
         }
-        guard state.index >= 0, state.index < state.folders.count else { throw RemoteMailError.staleCheckpoint }
         let folder = state.folders[state.index]
         let initialURL = try url(["mailFolders", folder.id, "messages", "delta"], query: [
             URLQueryItem(name: "$select", value: Self.messageFields), URLQueryItem(name: "$top", value: String(request.limit)),
             URLQueryItem(name: "$filter", value: "receivedDateTime ge \(ISO8601DateFormatter().string(from: state.since ?? request.since))"),
             URLQueryItem(name: "$orderby", value: "receivedDateTime desc")])
-        let current = try state.links[folder.id].map { try nextURL($0, expectedPath: initialURL.path) } ?? initialURL
+        let current = try state.links[folder.id].map { try nextURL($0, expectedURL: initialURL) } ?? initialURL
         if state.pendingIDs.isEmpty {
             let page: GraphMessagePage
             do { page = try MailHTTP.decode(GraphMessagePage.self, await get(current, pageSize: request.limit)) }
-            catch RemoteMailError.messageUnavailable { throw RemoteMailError.staleCheckpoint }
+            catch RemoteMailError.staleCheckpoint {
+                // Delta retention is finite. Reset only this folder, preserve
+                // all other folder cursors and every already cached message.
+                guard state.links[folder.id] != nil else { throw RemoteMailError.staleCheckpoint }
+                state.links[folder.id] = nil
+                page = try MailHTTP.decode(GraphMessagePage.self, await get(initialURL, pageSize: request.limit))
+            } catch RemoteMailError.messageUnavailable {
+                // A mailbox folder can disappear after discovery. Confirm its
+                // absence without treating its formerly cached mail as deleted.
+                do {
+                    _ = try await get(url(["mailFolders", folder.id], query: [URLQueryItem(name: "$select", value: "id")]))
+                    throw RemoteMailError.staleCheckpoint
+                } catch RemoteMailError.messageUnavailable {
+                    state.removeCurrentFolder()
+                    folderCache.removeAll { $0.id == folder.id }
+                    let complete = state.index >= state.folders.count
+                    if complete { state.index = 0 }
+                    return MailSyncPage(messages: [], checkpoint: SyncCheckpoint(opaqueState: try state.encoded(), initialComplete: request.checkpoint?.initialComplete == true || complete), hasMore: !complete)
+                }
+            }
             guard page.value.count <= 1_000 else { throw RemoteMailError.responseTooLarge }
             state.pendingIDs = Array(Set(page.value.map(\.id))).sorted()
             if let next = page.nextLink {
-                state.pendingLink = try nextURL(next, expectedPath: initialURL.path).absoluteString
+                state.pendingLink = try nextURL(next, expectedURL: initialURL).absoluteString
                 state.pendingCompletesFolder = false
             } else if let delta = page.deltaLink {
-                state.pendingLink = try nextURL(delta, expectedPath: initialURL.path).absoluteString
+                state.pendingLink = try nextURL(delta, expectedURL: initialURL).absoluteString
                 state.pendingCompletesFolder = true
             } else { throw RemoteMailError.malformedResponse }
         }
@@ -125,9 +144,15 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
     private func message(id: String) async throws -> MailMessage {
         let wire = try MailHTTP.decode(GraphMessageDTO.self, await get(url(["messages", id], query: [URLQueryItem(name: "$select", value: Self.messageFields)])))
         let needsMetadata = wire.hasAttachments == true || wire.body?.content.range(of: "cid:", options: .caseInsensitive) != nil
-        let attachments = needsMetadata ? try await attachmentMetadata(messageID: id) : []
+        guard wire.id == id else { throw RemoteMailError.malformedResponse }
+        var attachments: [MailAttachment] = [], warnings: [String] = []
+        if needsMetadata {
+            do { attachments = try await attachmentMetadata(messageID: id) }
+            catch where RESTMailContent.isBodyFailure(error) { warnings.append("Attachment metadata could not be decoded. Retry this message to retrieve it again.") }
+        }
         let role = folderCache.first(where: { $0.id == wire.parentFolderId })?.role
-        let mapped = try MicrosoftMapping.message(wire, accountID: accountID, role: role, attachments: attachments)
+        var mapped = try MicrosoftMapping.message(wire, accountID: accountID, role: role, attachments: attachments)
+        mapped.contentWarnings += warnings
         threadIDs[mapped.threadID] = wire.conversationId
         return mapped
     }
@@ -138,15 +163,25 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
             guard visited.count < 10, visited.insert(next.absoluteString).inserted else { throw RemoteMailError.responseTooLarge }
             let page = try MailHTTP.decode(GraphAttachmentPage.self, await get(next))
             result.append(contentsOf: page.value.map { MicrosoftMapping.attachment($0, accountID: accountID, messageID: messageID) })
-            current = try page.nextLink.map { try nextURL($0, expectedPath: next.path) }
+            current = try page.nextLink.map { try nextURL($0, expectedURL: next) }
         }
         return result
+    }
+    public func fetchThread(message source: MailMessage) async throws -> MailThread {
+        guard source.accountID == accountID, let remote = source.providerThreadID,
+              source.threadID == StableMailIdentity.thread(accountID: accountID, providerID: remote) else { throw RemoteMailError.invalidConfiguration }
+        let thread = try await fetchThread(providerConversationID: remote)
+        guard thread.messages.contains(where: { $0.providerID == source.providerID }) else { throw RemoteMailError.messageUnavailable }
+        return thread
     }
     public func fetchThread(id: UUID) async throws -> MailThread {
         guard let remote = threadIDs[id] else { throw RemoteMailError.messageUnavailable }
         return try await fetchThread(providerConversationID: remote)
     }
     public func fetchThread(providerConversationID: String) async throws -> MailThread {
+        // A provider reconstructed after restart has no in-memory folder roles.
+        // Discover them before normalizing thread messages into the local store.
+        if !hasDiscoveredFolders { _ = try await fetchRemoteFolders() }
         let escaped = providerConversationID.replacingOccurrences(of: "'", with: "''")
         var current: URL? = try url(["messages"], query: [URLQueryItem(name: "$filter", value: "conversationId eq '\(escaped)'"), URLQueryItem(name: "$select", value: "id"), URLQueryItem(name: "$top", value: "50")])
         var mapped: [MailMessage] = [], visited: Set<String> = []
@@ -154,10 +189,14 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
             try Task.checkCancellation()
             guard visited.count < 10, visited.insert(next.absoluteString).inserted else { throw RemoteMailError.responseTooLarge }
             let page = try MailHTTP.decode(GraphMessagePage.self, await get(next))
-            for item in page.value { mapped.append(try await message(id: item.id)) }
-            current = try page.nextLink.map { try nextURL($0, expectedPath: next.path) }
+            guard mapped.count + page.value.count <= 500 else { throw RemoteMailError.responseTooLarge }
+            for item in page.value {
+                mapped.append(try await message(id: item.id))
+                _ = try RESTMailContent.validateThread(mapped, accountID: accountID, providerThreadID: providerConversationID)
+            }
+            current = try page.nextLink.map { try nextURL($0, expectedURL: next) }
         }
-        return MailThread(id: StableMailIdentity.thread(accountID: accountID, providerID: providerConversationID), messages: mapped.sorted { $0.date < $1.date })
+        return try RESTMailContent.validateThread(mapped, accountID: accountID, providerThreadID: providerConversationID)
     }
     public func downloadAttachment(message: MailMessage, attachment: MailAttachment) async throws -> Data {
         guard message.accountID == accountID, let id = attachment.providerID, message.attachments.contains(where: { $0.id == attachment.id && $0.providerID == id }) else { throw RemoteMailError.invalidConfiguration }
@@ -177,6 +216,23 @@ private struct GraphSyncState: Codable {
     var pendingLink: String?
     var pendingCompletesFolder = false
     var since: Date?
+    mutating func reconcileFolders(_ discovered: [MailFolderDescriptor]) throws {
+        guard index >= 0, index <= folders.count else { throw RemoteMailError.staleCheckpoint }
+        let available = Dictionary(discovered.map { ($0.id, $0.role) }, uniquingKeysWith: { first, _ in first })
+        let currentID = folders.indices.contains(index) ? folders[index].id : nil
+        let previousIDs = Set(folders.map(\.id))
+        let processed = folders.prefix(index).filter { available.keys.contains($0.id) }
+        let remaining = folders.dropFirst(index).filter { available.keys.contains($0.id) }
+        folders = (Array(processed) + Array(remaining)).map { GraphSyncFolder(id: $0.id, role: available[$0.id] ?? nil) }
+        folders.append(contentsOf: discovered.filter { !previousIDs.contains($0.id) }.map { GraphSyncFolder(id: $0.id, role: $0.role) })
+        index = processed.count
+        links = links.filter { available.keys.contains($0.key) }
+        if let currentID, !available.keys.contains(currentID) { pendingIDs = []; pendingLink = nil; pendingCompletesFolder = false }
+    }
+    mutating func removeCurrentFolder() {
+        let folder = folders.remove(at: index)
+        links[folder.id] = nil; pendingIDs = []; pendingLink = nil; pendingCompletesFolder = false
+    }
     static func decode(_ raw: String?) throws -> Self {
         guard let raw else { return Self() }
         guard raw.utf8.count < 4_194_304, let result = try? JSONDecoder().decode(Self.self, from: Data(raw.utf8)) else { throw RemoteMailError.staleCheckpoint }
@@ -210,9 +266,29 @@ struct GraphMessageDTO: Decodable {
     let importance: String?
     let hasAttachments: Bool?
     let isDraft: Bool?
+    private enum CodingKeys: String, CodingKey { case id, conversationId, from, toRecipients, ccRecipients, subject, body, receivedDateTime, sentDateTime, parentFolderId, isRead, flag, importance, hasAttachments, isDraft }
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        conversationId = try values.decodeIfPresent(String.self, forKey: .conversationId)
+        from = try values.decodeIfPresent(GraphRecipient.self, forKey: .from)
+        toRecipients = try values.decodeIfPresent([GraphRecipient].self, forKey: .toRecipients)
+        ccRecipients = try values.decodeIfPresent([GraphRecipient].self, forKey: .ccRecipients)
+        subject = try values.decodeIfPresent(String.self, forKey: .subject)
+        body = try? values.decodeIfPresent(GraphBody.self, forKey: .body)
+        receivedDateTime = try values.decodeIfPresent(String.self, forKey: .receivedDateTime)
+        sentDateTime = try values.decodeIfPresent(String.self, forKey: .sentDateTime)
+        parentFolderId = try values.decodeIfPresent(String.self, forKey: .parentFolderId)
+        isRead = try values.decodeIfPresent(Bool.self, forKey: .isRead)
+        flag = try values.decodeIfPresent(GraphFlag.self, forKey: .flag)
+        importance = try values.decodeIfPresent(String.self, forKey: .importance)
+        hasAttachments = try values.decodeIfPresent(Bool.self, forKey: .hasAttachments)
+        isDraft = try values.decodeIfPresent(Bool.self, forKey: .isDraft)
+    }
 }
+struct GraphMessageReference: Decodable { let id: String }
 struct GraphMessagePage: Decodable {
-    let value: [GraphMessageDTO]; let nextLink: String?; let deltaLink: String?
+    let value: [GraphMessageReference]; let nextLink: String?; let deltaLink: String?
     enum CodingKeys: String, CodingKey { case value; case nextLink = "@odata.nextLink"; case deltaLink = "@odata.deltaLink" }
 }
 struct GraphAttachment: Decodable { let id: String; let name: String?; let contentType: String?; let size: Int?; let isInline: Bool? }
@@ -226,11 +302,13 @@ enum MicrosoftMapping {
         MailAddress(name: value.emailAddress.name ?? value.emailAddress.address ?? "Unknown sender", email: value.emailAddress.address ?? "")
     }
     static func message(_ wire: GraphMessageDTO, accountID: UUID, role: MailFolder?, attachments: [MailAttachment] = []) throws -> MailMessage {
-        guard !wire.id.isEmpty, let body = wire.body else { throw RemoteMailError.malformedResponse }
+        guard !wire.id.isEmpty else { throw RemoteMailError.malformedResponse }
+        let body = wire.body ?? GraphBody(contentType: "unavailable", content: "")
         let thread = wire.conversationId ?? wire.id
         let isHTML = body.contentType.lowercased() == "html"
-        guard isHTML || body.contentType.lowercased() == "text" else { throw RemoteMailError.unsupportedContent }
-        let limited = String(body.content.prefix(MIMEParser.maximumTextBytes))
+        let supported = isHTML || body.contentType.lowercased() == "text"
+        var warnings: [String] = supported ? [] : [RESTMailContent.unavailableWarning]
+        let limited = supported ? RESTMailContent.limitText(body.content, warnings: &warnings) : ""
         let formatter = ISO8601DateFormatter()
         var date: Date?
         if let stamp = wire.receivedDateTime ?? wire.sentDateTime {
@@ -244,7 +322,7 @@ enum MicrosoftMapping {
                            date: date ?? Date(timeIntervalSince1970: 0), folder: wire.isDraft == true ? .drafts : role ?? .archive,
                            isRead: wire.isRead ?? false, isFlagged: wire.flag?.flagStatus == "flagged", attachments: attachments,
                            providerThreadID: thread, providerFolderIDs: wire.parentFolderId.map { [$0] } ?? [], htmlBody: isHTML ? limited : nil,
-                           cc: (wire.ccRecipients ?? []).map(address), isImportant: wire.importance == "high")
+                           cc: (wire.ccRecipients ?? []).map(address), isImportant: wire.importance == "high", contentWarnings: warnings)
     }
     static func attachment(_ wire: GraphAttachment, accountID: UUID, messageID: String) -> MailAttachment {
         MailAttachment(id: StableMailIdentity.message(accountID: accountID, providerID: "attachment:\(messageID):\(wire.id)"),
