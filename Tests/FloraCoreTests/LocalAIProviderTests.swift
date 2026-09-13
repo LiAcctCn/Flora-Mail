@@ -295,12 +295,16 @@ struct LocalAIProviderTests {
     }
 
     @Test func semanticSearchDoesNotSendMailboxContextToGenerativeRuntime() async throws {
-        let client = ScriptedLocalModelClient(responses: [])
-        do {
-            _ = try await LocalAIProvider(client: client).semanticSearch("Meetings", messages: [message()])
-            Issue.record("The feature layer should fall back to ordinary text search")
-        } catch { #expect(error as? AIError == .unsupportedCapability) }
-        #expect(await client.requests.isEmpty)
+        let client = ScriptedLocalModelClient(responses: [#"{"terms":[{"term":"meetings","alternatives":["meeting"]}]}"#])
+        let source = message()
+        let result = try await LocalAIProvider(client: client).semanticSearch("Meetings", messages: [source])
+        #expect(result == [source.id])
+        let requests = await client.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].prompt.contains("Meetings"))
+        #expect(!requests[0].prompt.contains(source.body))
+        #expect(!requests[0].prompt.contains(source.from.email))
+        #expect(!requests[0].prompt.contains(source.id.uuidString))
     }
 
     private func json(_ object: [String: Any]) throws -> String {

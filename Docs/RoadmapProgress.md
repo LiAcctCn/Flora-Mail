@@ -31,3 +31,19 @@ The coordinator durably journals attempts before network dispatch, binds proposa
 The composer now supports Reply All, Cc/Bcc, controlled attachment imports, local draft recovery, separate server-draft synchronization and confirmed real sending. Attachment bytes are bound to previews by SHA-256; cross-account paths, substitution and size violations fail closed. Recovery cannot overwrite private state when the main store is unreadable. Attachments are currently limited to 2 MiB each and 8 MiB total for consistent provider handling.
 
 Phase gate: Release app built successfully; **284 tests passed, zero failed** (86 XCTest + 198 Swift Testing). This included the real native SMTP transport against trusted and untrusted TLS loopback fixtures, plus OAuth loopback and WebKit checks. Review found no secret signatures in project files. Credential-backed Gmail, Microsoft and iCloud writes remain **UNVERIFIED**. The Mac was locked during the new composer UI verification, so that manual check remains pending.
+
+Follow-up native verification after the Mac became available confirmed the updated composer controls, real local Proofread preview, Replace, Undo Rewrite and the discard confirmation. Only a temporary fictional draft was used and discarded; existing saved drafts were preserved.
+
+## Phase 3 — context and intelligence
+
+Added query-only Local AI search expansion with local ranking, plus an optional source-linked assistant. Retrieval requires explicit account scope and provides at most six relevant 1,500-character excerpts. Structured claims require exact source IDs and quotes; stale source snapshots and cancellations cannot publish answers. Off/unavailable modes preserve text search. This is query expansion, not a local embedding index; matching a quote verifies provenance, not the truth of every paraphrase.
+
+Today now explains priority through mail metadata, conservative English text rules and correctly labeled generated evidence, with direct source links, reply/deadline cues, low-priority updates and bounded coverage. Optional category learning derives suggestions from consistent user-confirmed choices for one sender/account. Conflicting corrections suspend a pattern; deleted categories are never recreated. Suggestions still require acceptance. Historical examples whose provider IDs changed and no longer resolve in the cache are excluded.
+
+The reusable Personal Context Layer offers exact-sender Contacts lookups and bounded Calendar conflict checks. OS access is requested only through explicit settings buttons. Meeting dates remain tentative, relative dates use the original message date, and users can review a date/time before checking. Missing/partial/denied context never claims availability. Context stays in memory and is not automatically supplied to AI; no Calendar or Contacts writes are implemented.
+
+Phase gate: **345 tests passed, zero failed** (103 XCTest + 242 Swift Testing), including native OAuth, safe WebKit and SMTP TLS tests. The actual Ollama 0.34.0 / gemma3:4b run passed query expansion, scoped retrieval and cited answer validation using the fictional synchronized fixture. Live account authentication, private-mail inference and native Calendar/Contacts grants remain **UNVERIFIED**.
+
+Native review exercised the explained Today dashboard, actual local assistant answer, citation navigation to the correct original, and Personal Context with permissions still unrequested. The app showed unknown calendar availability and did not open OS consent prompts. Dark appearance rendered correctly. Review also removed repeated dashboard computation and aligned disclosure content. Final phase counts below include the resulting regression coverage.
+
+Final Phase 3 gate: Release build succeeded; **349 tests passed, zero failed** (103 XCTest + 246 Swift Testing), including the preset-search and conditional-update regressions.

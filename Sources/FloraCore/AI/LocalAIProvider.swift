@@ -58,10 +58,23 @@ public struct LocalAIProvider: AIProvider {
     }
 
     public func semanticSearch(_ query: String, messages: [MailMessage]) async throws -> [UUID] {
-        try Task.checkCancellation()
-        // A mailbox-wide prompt is not an index and would disclose unnecessary
-        // context. A future local embedding index can implement this capability.
-        throw AIError.unsupportedCapability
+        let result = try await MailIntelligenceService(provider: self).search(
+            query: query, messages: messages, accountIDs: Set(messages.map(\.accountID)))
+        return result.messageIDs
+    }
+
+    public func expandSearchQuery(_ query: String) async throws -> SearchQueryExpansion {
+        let query = try MailIntelligenceService.validatedQuery(query)
+        let output = try await generate(AIRetrievalPromptLibrary.expansion(query))
+        return try AIResponseParser.expansion(output.content, query: query,
+                                               provider: label(output.identity, truncated: false))
+    }
+
+    public func answer(_ request: AssistantRequest) async throws -> AssistantAnswer {
+        try MailIntelligenceService.validate(request)
+        let output = try await generate(AIRetrievalPromptLibrary.answer(request))
+        return try AIResponseParser.answer(output.content, request: request,
+                                          provider: label(output.identity, truncated: false))
     }
 
     private func context(for message: MailMessage) -> String {

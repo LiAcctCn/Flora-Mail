@@ -4,14 +4,14 @@ import FloraCore
 struct TodayView: View {
     @Environment(AppModel.self) private var model
     private var inbox: [MailMessage] { model.scopedMessages.filter { $0.folder == .inbox }.sorted { $0.date > $1.date } }
-    private var attentionIDs: Set<UUID> { Set(model.attentionItems.map(\.messageID)) }
-    private var attention: [MailMessage] { inbox.filter { $0.isFlagged || $0.isImportant || attentionIDs.contains($0.id) } }
-    private var updates: [MailMessage] { inbox.filter { !$0.isFlagged && !$0.isImportant && !attentionIDs.contains($0.id) } }
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
         return hour < 12 ? "Good morning." : hour < 18 ? "Good afternoon." : "Good evening."
     }
     var body: some View {
+        let briefing = model.dailyBriefing
+        let attention = briefing.needsAttention
+        let updates = briefing.updates.map(\.message)
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 HStack(alignment: .top) {
@@ -35,15 +35,18 @@ struct TodayView: View {
                     }.padding(18).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
                 }
                 HStack(spacing: 16) {
-                    metric("Flagged emails", value: inbox.filter(\.isFlagged).count, icon: "flag", destination: .important)
-                    metric("\(model.aiEnabled ? "Action suggestions" : "Unread emails")", value: model.aiEnabled ? attentionIDs.count : inbox.filter { !$0.isRead }.count, icon: "arrowshape.turn.up.left", destination: .folder(.inbox))
+                    metric("Needs attention", value: attention.count, icon: "flag", destination: .folder(.inbox))
+                    metric("Replies requested", value: briefing.replyNeededCount, icon: "arrowshape.turn.up.left", destination: .folder(.inbox))
                     metric("In your inbox", value: inbox.count, icon: "tray", destination: .folder(.inbox))
                     metric("Saved drafts", value: model.visibleDrafts.count, icon: "doc", destination: model.state.preferences.showDemoAccounts ? .folder(.drafts) : .localDrafts)
                 }
                 HStack(spacing: 7) {
                     Image(systemName: model.aiEnabled ? "sparkles" : "hand.raised").foregroundStyle(Color.floraAccent)
-                    Text(model.aiEnabled ? "\(model.aiLabel) · Generated suggestions link to cached mail. Every item links to its original." : "AI is off. Your mail, flags, categories, and composer are still available.")
+                    Text(model.aiEnabled ? "Priority uses mail status, explained text rules and source-linked \(model.aiLabel) suggestions." : "AI is off. This dashboard uses mail status and local text rules; normal mail controls remain available.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                if briefing.isTruncated {
+                    Text("Showing insights for \(briefing.consideredMessageCount) of \(briefing.availableInboxCount) cached inbox messages. Open Inbox for the complete list.").font(.caption).foregroundStyle(.secondary)
                 }
                 if !model.state.preferences.showDemoAccounts && model.aiEnabled && model.briefingProgress == nil {
                     HStack {
@@ -74,9 +77,23 @@ struct TodayView: View {
                         Spacer()
                         Button("Open Inbox") { model.navigate(.folder(.inbox)) }.buttonStyle(.link)
                     }
-                    if attention.isEmpty { Text("Nothing flagged for your attention. You’re up to date.").foregroundStyle(.secondary).padding(.vertical, 20) }
-                    ForEach(attention.prefix(5)) { message in
-                        attentionRow(message)
+                    if attention.isEmpty { Text("No attention signals found in the reviewed cached messages.").foregroundStyle(.secondary).padding(.vertical, 20) }
+                    ForEach(attention.prefix(5)) { item in
+                        attentionRow(item)
+                    }
+                }
+                if !briefing.lowPriority.isEmpty {
+                    DisclosureGroup("Low priority · \(briefing.lowPriority.count)") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(briefing.lowPriority.prefix(20)) { item in
+                                Button { model.openMessage(item.messageID) } label: {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.message.subject).font(.callout)
+                                        Text(item.explanation).font(.caption).foregroundStyle(.secondary)
+                                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+                                }.buttonStyle(.plain)
+                            }
+                        }.padding(.top, 12)
                     }
                 }
                 Divider()
@@ -126,8 +143,9 @@ struct TodayView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.floraAccent.opacity(0.1)))
         }.buttonStyle(.plain).accessibilityLabel("\(value) \(title)")
     }
-    private func attentionRow(_ message: MailMessage) -> some View {
-        HStack(alignment: .top, spacing: 16) {
+    private func attentionRow(_ item: BriefingItem) -> some View {
+        let message = item.message
+        return HStack(alignment: .top, spacing: 16) {
             Text(message.from.name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined())
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(Color.floraAccent)
                 .frame(width: 36, height: 36).background(Color.floraAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
@@ -137,12 +155,21 @@ struct TodayView: View {
                     Text("·").foregroundStyle(.tertiary)
                     Text(message.subject).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
-                if let action = model.attentionItems.first(where: { $0.messageID == message.id }) {
-                    Text(action.title).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                    Text("\(model.aiLabel) suggestion · Verify in original email").font(.system(size: 10)).foregroundStyle(.secondary)
-                } else {
-                    Text(message.preview).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2)
-                    Label("Flagged message", systemImage: "flag.fill").font(.system(size: 10)).foregroundStyle(Color.floraAccent)
+                Group {
+                    Text(item.headline).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                    Text(item.explanation).font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Why this needs attention") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(item.signals) { signal in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("\(signal.label) · \(signal.title)").font(.caption)
+                                    if let quote = signal.sourceQuote {
+                                        Button("“\(quote)”") { model.openMessage(signal.sourceMessageID) }.buttonStyle(.link).font(.caption)
+                                    }
+                                }.padding(.vertical, 3)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                    }.font(.caption)
                 }
             }
             Spacer(minLength: 12)

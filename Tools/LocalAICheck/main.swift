@@ -15,9 +15,9 @@ struct LocalAICheck {
     @MainActor
     private static func run() async throws {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        guard arguments.filter({ $0.hasPrefix("--") }).allSatisfy({ ["--replies-only", "--synchronized-fixture"].contains($0) }),
+        guard arguments.filter({ $0.hasPrefix("--") }).allSatisfy({ ["--replies-only", "--synchronized-fixture", "--intelligence-only"].contains($0) }),
               arguments.filter({ !$0.hasPrefix("--") }).count <= 1 else {
-            throw AIError.invalidConfiguration("Usage: FloraLocalAICheck [model] [--replies-only] [--synchronized-fixture]")
+            throw AIError.invalidConfiguration("Usage: FloraLocalAICheck [model] [--replies-only | --intelligence-only] [--synchronized-fixture]")
         }
         let repliesOnly = arguments.contains("--replies-only")
         let synchronizedFixture = arguments.contains("--synchronized-fixture")
@@ -28,6 +28,25 @@ struct LocalAICheck {
         emit("Runtime: Ollama \(identity.runtimeVersion); model: \(identity.model); digest: \(identity.digest)")
         let provider = CachedAIProvider(provider: LocalAIProvider(configuration: configuration, client: client), store: MemoryAICacheStore())
         let state = try await verificationState(synchronizedFixture: synchronizedFixture)
+        if arguments.contains("--intelligence-only") {
+            guard let meeting = state.messages.first(where: { $0.subject == "Project sync moved to tomorrow at 3 PM" }) else {
+                throw AIError.invalidResponse("The fictional meeting fixture is missing.")
+            }
+            let service = MailIntelligenceService(provider: provider)
+            let result = try await service.answer(query: "Project meeting", messages: state.messages, accountIDs: [meeting.accountID])
+            guard result.search.mode == .semanticExpansion, result.search.messageIDs.contains(meeting.id),
+                  result.outcome == .answered, let answer = result.answer,
+                  result.sources.allSatisfy({ source in source.accountID == meeting.accountID && state.messages.contains(where: { source.matches($0) }) }) else {
+                throw AIError.invalidResponse(result.notice ?? "Local retrieval or source-linked answer did not complete.")
+            }
+            emit("Search: actual local query expansion; \(result.search.messageIDs.count) scoped matches")
+            for claim in answer.claims {
+                emit("Claim: \(claim.text)")
+                for citation in claim.citations { emit("Source quote: \(citation.quote)") }
+            }
+            emit("PASS: local query expansion, scoped retrieval and validated source-linked answer. Fictional fixtures only; no mailbox or calendar actions executed.")
+            return
+        }
         if repliesOnly {
             guard let maya = state.messages.first(where: { $0.subject == "Flora project · Design review ready for feedback" }) else {
                 throw AIError.invalidResponse("The Maya smart-reply verification fixture is missing.")

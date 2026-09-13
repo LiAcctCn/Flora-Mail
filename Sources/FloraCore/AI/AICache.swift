@@ -109,8 +109,22 @@ public struct CachedAIProvider: AIProvider {
         try Task.checkCancellation()
         return result
     }
+    public func expandSearchQuery(_ query: String) async throws -> SearchQueryExpansion {
+        // Retrieval queries and assistant conversations are transient; do not
+        // persist a second copy of user questions or selected source excerpts.
+        try Task.checkCancellation()
+        let result = try await provider.expandSearchQuery(query)
+        try Task.checkCancellation()
+        return result
+    }
+    public func answer(_ request: AssistantRequest) async throws -> AssistantAnswer {
+        try Task.checkCancellation()
+        let result = try await provider.answer(request)
+        try Task.checkCancellation()
+        return result
+    }
     private func source(_ message: MailMessage) -> [String] {
-        [message.id.uuidString, message.subject, message.body, message.from.name, message.from.email]
+        [message.id.uuidString, message.accountID.uuidString, message.providerID, message.subject, message.body, message.from.name, message.from.email]
     }
     private func encoded<T: Encodable>(_ value: T) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

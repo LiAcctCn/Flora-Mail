@@ -65,6 +65,7 @@ struct ReaderView: View {
                     classificationSection
                 }
                 originalSection
+                PersonalContextView(message: currentMessage)
                 if model.aiEnabled {
                     actionSection
                     replySection
@@ -317,9 +318,20 @@ struct ReaderView: View {
                     }
                 }
                 Text(suggestion.explanation).font(.callout).foregroundStyle(.secondary)
-                Text("\(model.state.preferences.aiMode == .local ? "Model" : "Demo") confidence: \(suggestion.confidence, format: .percent.precision(.fractionLength(0)))")
+                if let learned = model.learnedCategory(for: currentMessage), learned.classification.id == suggestion.id {
+                    Text("Based on \(learned.supportCount) confirmed choices in this account").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Supporting choices") {
+                        ForEach(learned.supportingMessageIDs, id: \.self) { id in
+                            if let source = model.state.messages.first(where: { $0.id == id }) {
+                                Button(source.subject) { model.openMessage(id) }.buttonStyle(.link).font(.caption)
+                            }
+                        }
+                    }.font(.caption)
+                } else {
+                    Text("\(model.state.preferences.aiMode == .local ? "Model" : "Demo") confidence: \(suggestion.confidence, format: .percent.precision(.fractionLength(0)))")
                     .font(.caption).foregroundStyle(.secondary)
                     .help("The model’s own estimate; this is a suggestion for your review.")
+                }
                 HStack(spacing: 10) {
                     if currentMessage.categoryID != category.id {
                         Button("Accept \(category.name)") { _ = model.acceptClassification(suggestion) }

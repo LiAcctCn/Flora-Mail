@@ -115,7 +115,10 @@ struct RealAccountWorkflowTests {
         #expect(model.visibleMessages.map(\.accountID) == [second.id])
         let fallback = try await model.assistantSearch("Shared")
         #expect(fallback.messages.map(\.accountID) == [second.id])
-        #expect(await client.requests.isEmpty) // Generative Local AI is not a mailbox search index.
+        let expansionRequests = await client.requests
+        #expect(!expansionRequests.isEmpty)
+        #expect(expansionRequests.allSatisfy { !$0.prompt.contains("PRIVATE_ACCOUNT_") && !$0.prompt.contains("colleague@example.test") })
+        // Expansion receives the query only; mailbox matching stays on-device.
     }
 
     @Test func demoVisibilitySeparatesAccountsMessagesAndSavedDrafts() throws {

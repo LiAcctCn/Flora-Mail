@@ -171,7 +171,7 @@ private struct MessageListView: View {
                 }.padding(8).background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
                 if !model.searchText.isEmpty {
                     HStack {
-                        Text(model.semanticResults == nil ? "Text matches" : "Semantic matches").font(.caption).foregroundStyle(.secondary)
+                        Text(model.searchResultLabel).font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if model.searching { ProgressView().controlSize(.mini) }
                         else if model.semanticResults != nil { Button("Use Text") { model.clearSemanticSearch() }.font(.caption) }

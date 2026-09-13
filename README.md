@@ -36,19 +36,19 @@ You can also open a blank composer with **⌘N**, reply/forward from a message, 
 
 - Native, resizable sidebar, message list and reader; Today dashboard; light/dark appearance; text selection, accessibility labels, keyboard navigation and context menus.
 - Conventional mail destinations plus Important, user-owned categories and two demo accounts; 16 realistic fictional messages, conversation links, and a saved draft. Connected real accounts and provider folders appear separately from Demo Mode.
-- Conventional search within the current mailbox, with a separate optional demo semantic mode. Search failures return to text matching.
+- Conventional search within the current mailbox, plus optional local query expansion and ranked local matching. Search failures return to text matching.
 - Demo compose/send, saved drafts, reply, forward, flag, explicit read/unread, archive, reversible Trash, and move back to Inbox. Category creation/rename/removal and local classification remain user-controlled. Real accounts support confirmed read/flag changes, archive, move, draft synchronization and sending after explicit permission. Reply All, Cc/Bcc and bounded composer attachments use the normal composer.
 - Embedded source-backed summaries, classification suggestions, action extraction, smart replies and writing previews through either `MockAIProvider` or real `LocalAIProvider`.
 - Local AI settings with saved model/loopback endpoint, connection test, timeout, cancellation, cache clearing and visible unavailable states.
 - Persistent capability caches keyed by source content, capability, model digest, endpoint and prompt version. Draft rewrites are deliberately not cached.
-- Optional read-only assistant search panel linking to original messages; no chat requirement for mail controls.
+- Optional read-only assistant with bounded retrieval and source-linked answers, plus explained priority signals in Today. No chat requirement for mail controls.
 - Centralized permission checking, transactional local changes, confirmed remote actions, durable send/outcome history, real read/flag inverse operations and session-only local Undo.
 - Versioned atomic JSON persistence for account metadata, messages, categories, drafts, preferences, summaries, classifications, rules and action history.
 - `AIProvider`, `MailProvider`, `ReadOnlyMailProvider`, `CredentialStore` and `MailRepository` abstractions. Account settings, cancellable bounded sync, persistent checkpoints, offline browsing, safe MIME/HTML-to-text decoding, and requested attachment downloads. Rule authorization and scope checks remain confined to Demo accounts; no automation scheduler or rule editor is enabled.
 
 ## Demo and Local AI modes
 
-`DemoMailProvider` operates on fictional local data. `MockAIProvider` uses deterministic extraction, keyword matching, a small synonym map and text substitutions. It is not a language model, embedding engine, or adaptive classifier. “Semantic” results are labeled as demo matches.
+`DemoMailProvider` operates on fictional local data. `MockAIProvider` uses deterministic extraction, keyword matching, a small synonym map and text substitutions. It is not a language model, embedding engine, or adaptive classifier. Its search and generated answers are explicitly labeled Demo AI.
 
 `LocalAIProvider` performs real inference through Ollama's structured chat API. It never substitutes mock responses or cloud inference. The default mode remains Demo AI; select **Local AI** explicitly to use a model. **Off** keeps the traditional interface available.
 
@@ -82,9 +82,9 @@ Verified here with **Ollama 0.34.0 + gemma3:4b (Q4_K_M)** already installed on t
 
 Flora checks local model metadata and forces the runtime's `:local` selector on every inference request. Remote endpoints, cloud models, redirects, proxies, cookies and URL caching are blocked. Older runtimes lacking that local-only contract are rejected. See [Local AI privacy and runtime details](Docs/LocalAI.md).
 
-A stopped service, missing model, timeout, cancelled request, invalid JSON or unsupported response leaves the original email and normal composer usable. Local semantic search is deferred: the search UI falls back to conventional text matches rather than sending a whole mailbox to a language model.
+A stopped service, missing model, timeout, cancelled request, invalid JSON or unsupported response leaves the original email and normal composer usable. Semantic search sends only the query to the model for expansion, then ranks scoped cached mail locally. Assistant answers use at most six relevant excerpts of 1,500 characters each; every displayed claim cites a validated original quote. This is query expansion, not an embedding index, and quote validation does not prove a paraphrase is correct.
 
-Calendar integration, learned preferences, whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. Formatted HTML supports a restricted subset of mail presentation; encrypted content and universal layout fidelity are not supported. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
+Optional Personal Context checks use native Calendar and Contacts after explicit macOS permission. A check reads the selected sender and a reviewed meeting interval only, stores results in memory, and never supplies them to AI automatically. Category learning can be enabled in Settings; two consistent confirmed choices for one sender/account establish a reviewable suggestion. Whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. Formatted HTML supports a restricted subset of mail presentation; encrypted content and universal layout fidelity are not supported. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
 
 ## Data and Undo
 

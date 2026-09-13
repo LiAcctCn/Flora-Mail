@@ -56,6 +56,17 @@ struct AICacheTests {
         #expect(try await provider.summarize(source).headline == source.body)
         #expect(await base.count("summary") == 2)
     }
+    @Test func accountAndProviderIdentityAreExplicitCacheBoundaries() async throws {
+        let base = CountingProvider()
+        let provider = CachedAIProvider(provider: base, store: MemoryAICacheStore())
+        var source = message()
+        _ = try await provider.summarize(source)
+        source.accountID = UUID()
+        _ = try await provider.summarize(source)
+        source.providerID = "another-provider-record"
+        _ = try await provider.summarize(source)
+        #expect(await base.count("summary") == 3)
+    }
     @Test func modelPromptAndEndpointNamespaceInvalidateCache() async throws {
         let base = CountingProvider(), store = MemoryAICacheStore(), source = message()
         let initial = CachedAIProvider(provider: base, store: store, promptVersion: "v1", namespace: "server1")

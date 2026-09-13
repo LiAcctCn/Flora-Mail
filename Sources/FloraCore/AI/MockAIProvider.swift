@@ -127,6 +127,27 @@ public struct MockAIProvider: AIProvider {
         return matches.sorted { $0.0.date > $1.0.date }.map { $0.0.id }
     }
 
+    public func expandSearchQuery(_ query: String) async throws -> SearchQueryExpansion {
+        try Task.checkCancellation()
+        _ = try MailIntelligenceService.validatedQuery(query)
+        let groups = MailIntelligenceService.queryTerms(query).prefix(24).compactMap { term -> SearchExpansionTerm? in
+            guard let group = Self.synonymGroups.first(where: { $0.contains(term) }) else { return nil }
+            return SearchExpansionTerm(term: term, alternatives: Array(group.subtracting([term])).sorted())
+        }
+        return SearchQueryExpansion(terms: groups, provider: "Demo AI · fixed synonyms", mode: .demoSemantic)
+    }
+
+    public func answer(_ request: AssistantRequest) async throws -> AssistantAnswer {
+        try Task.checkCancellation()
+        try MailIntelligenceService.validate(request)
+        let claims = request.sources.prefix(3).map { source in
+            let quote = String(source.excerpt.prefix(600))
+            return AssistantClaim(text: quote, citations: [AssistantCitation(messageID: source.messageID, quote: quote)])
+        }
+        try Task.checkCancellation()
+        return AssistantAnswer(claims: claims, provider: "Demo AI · extractive assistant")
+    }
+
     private static func proofread(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let corrections = [
@@ -198,9 +219,10 @@ public struct MockAIProvider: AIProvider {
     ]
     private static let searchStopWords: Set<String> = ["a", "an", "the", "what", "which", "who", "show", "find", "me", "my", "mail", "email", "emails", "message", "messages", "about", "from", "to", "of", "for", "and", "is", "are", "did", "say", "said", "with"]
     private static let synonymGroups: [Set<String>] = [
-        ["meeting", "meet", "appointment", "availability"],
-        ["deadline", "due", "submission", "submit"],
-        ["reply", "respond", "response", "confirm"],
+        ["meeting", "meet", "meetings", "appointment", "availability"],
+        ["deadline", "deadlines", "due", "submission", "submit"],
+        ["reply", "replies", "respond", "response", "confirm"],
+        ["change", "changed", "moved", "update", "updated"],
         ["purchase", "order", "shopping"],
         ["travel", "flight", "hotel", "train"],
         ["finance", "payment", "invoice", "bank"]

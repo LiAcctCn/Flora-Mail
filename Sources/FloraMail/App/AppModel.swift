@@ -14,6 +14,7 @@ final class AppModel {
     var selectedMessageID: UUID?
     var searchText = ""
     var semanticResults: [UUID]?
+    private(set) var searchResultLabel = "Text matches"
     var searchNotice: String?
     var searching = false
     var composingDraft: Draft?
@@ -39,6 +40,7 @@ final class AppModel {
     var showingCategories = false
     var showingAssistant = false
     var attentionItems: [ActionItem] = []
+    private(set) var briefingProviderLabel: String?
     var briefingError: String?
     var briefingProgress: String?
     var checkingLocalConnection = false
@@ -52,6 +54,7 @@ final class AppModel {
     private var briefingRevision = UUID()
     private let executor: ActionExecutor
     let accountController: AccountController
+    let personalContext = PersonalContextController()
     private var mockAI: any AIProvider = MockAIProvider()
     private var localAI: any AIProvider = LocalAIProvider()
     private var cacheStore: any AICacheStore = MemoryAICacheStore()
@@ -413,8 +416,14 @@ final class AppModel {
         aiRevision = UUID()
         connectionTask?.cancel(); connectionRevision = UUID(); checkingLocalConnection = false
         localConnectionState = "Not tested"; localConnectionMessage = nil; localModelIdentity = nil
-        cancelBriefing(); attentionItems = []; briefingError = nil; briefingProgress = nil
+        cancelBriefing(); attentionItems = []; briefingProviderLabel = nil; briefingError = nil; briefingProgress = nil
         clearSemanticSearch(); configureProviders()
+    }
+    func setCategoryLearning(_ enabled: Bool) {
+        do {
+            var preferences = state.preferences; preferences.learnCategoryPreferences = enabled
+            try executor.updatePreferences(preferences); refresh(); resetAIRequests()
+        } catch { report(error) }
     }
     func updateAIMode(_ mode: AIMode) {
         do {
@@ -506,6 +515,11 @@ final class AppModel {
         return result
     }
     func classification(for message: MailMessage) async throws -> ClassificationSuggestion? {
+        if let learned = learnedCategory(for: message) {
+            try requireAI()
+            try executor.cacheClassification(learned.classification, messageID: message.id); refresh()
+            return learned.classification
+        }
         let categories = state.categories
         let result = try await performAI(for: message) { try await $0.classify(message, categories: categories) }
         guard categories == state.categories else { throw CancellationError() }
@@ -523,15 +537,39 @@ final class AppModel {
         return try await performAI(for: context) { try await $0.rewrite(text, tool: tool, context: context) }
     }
     func assistantSearch(_ query: String) async throws -> (messages: [MailMessage], notice: String) {
+        let result = try await searchIntelligence(query)
+        let byID = Dictionary(scopedMessages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return (result.messageIDs.compactMap { byID[$0] }, result.notice ?? "Matches in \(intelligenceScopeLabel)")
+    }
+    var intelligenceScopeLabel: String {
+        if let accountID = accountScopeID { return displayedAccounts.first { $0.id == accountID }?.address.email ?? "this account" }
+        return state.preferences.showDemoAccounts ? "Demo Mode" : "your connected accounts"
+    }
+    func learnedCategory(for message: MailMessage) -> LearnedCategorySuggestion? {
+        CategoryPreferenceLearningService().suggestion(for: message, in: state, enabled: state.preferences.learnCategoryPreferences && aiEnabled)
+    }
+    var dailyBriefing: DailyBriefingSnapshot {
+        let scope: MailIntelligenceScope = accountScopeID.map { .account($0) } ?? (state.preferences.showDemoAccounts ? .demo : .realAccounts)
+        return PriorityBriefingService().build(snapshot: state, scope: scope, actions: aiEnabled ? attentionItems : [], aiProviderLabel: aiEnabled ? briefingProviderLabel : nil)
+    }
+    func assistantAnswer(_ query: String) async throws -> MailAssistantResult {
+        let identity = aiRequestIdentity
         let messages = scopedMessages.filter { $0.folder != .trash }
-        do {
-            let ids = try await performAI { try await $0.semanticSearch(query, messages: messages) }
-            let matches = messages.filter { ids.contains($0.id) }.sorted { $0.date > $1.date }
-            return (matches, "Demo semantic matches · \(matches.count) source messages")
-        } catch is CancellationError { throw CancellationError() } catch {
-            let matches = messages.filter { [$0.subject, $0.body, $0.from.name].contains { $0.localizedStandardContains(query) } }
-            return (matches, "Semantic search unavailable. Showing conventional text matches.")
-        }
+        let service = MailIntelligenceService(provider: aiEnabled ? ai : nil)
+        let result = try await service.answer(query: query, messages: messages, accountIDs: Set(messages.map(\.accountID)))
+        try Task.checkCancellation()
+        guard identity == aiRequestIdentity,
+              result.sources.allSatisfy({ source in scopedMessages.contains(where: { source.matches($0) }) }) else { throw CancellationError() }
+        return result
+    }
+    private func searchIntelligence(_ query: String) async throws -> MailSearchResult {
+        let identity = aiRequestIdentity
+        let messages = scopedMessages.filter { $0.folder != .trash }
+        let result = try await MailIntelligenceService(provider: aiEnabled ? ai : nil)
+            .search(query: query, messages: messages, accountIDs: Set(messages.map(\.accountID)))
+        try Task.checkCancellation()
+        guard identity == aiRequestIdentity else { throw CancellationError() }
+        return result
     }
     func cancelBriefing(userInitiated: Bool = false) {
         briefingTask?.cancel(); briefingRevision = UUID(); briefingProgress = nil
@@ -540,6 +578,7 @@ final class AppModel {
     func refreshBriefing() async {
         cancelBriefing(); attentionItems = []; briefingError = nil
         guard aiEnabled else { return }
+        briefingProviderLabel = state.preferences.aiMode == .local ? "Local AI · \(state.preferences.localAI.model)" : "Demo AI"
         let revision = UUID(); briefingRevision = revision
         let messages = Array(scopedMessages.filter { $0.folder == .inbox }.sorted { $0.date > $1.date }.prefix(state.preferences.showDemoAccounts ? 50 : 20))
         let task = Task { @MainActor in
@@ -563,7 +602,7 @@ final class AppModel {
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
     func clearSemanticSearch() {
-        searchTask?.cancel(); semanticResults = nil; searchNotice = nil; searching = false
+        searchTask?.cancel(); semanticResults = nil; searchNotice = nil; searching = false; searchResultLabel = "Text matches"
     }
     func semanticSearch() {
         clearSemanticSearch()
@@ -571,17 +610,18 @@ final class AppModel {
         guard !query.isEmpty else { return }
         guard aiEnabled else { searchNotice = "AI is off. Showing text matches."; return }
         searching = true
-        let messages = scopedMessages
         searchTask = Task {
             do {
-                let ids = try await performAI { try await $0.semanticSearch(query, messages: messages) }
+                let result = try await searchIntelligence(query)
                 try Task.checkCancellation()
                 guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                semanticResults = ids
+                semanticResults = result.messageIDs
+                searchResultLabel = result.mode == .text || result.mode == .textFallback ? "Text matches" : "Expanded matches"
                 reconcileSelection()
-                searchNotice = "Demo semantic matches · \(visibleMessages.count) in \(title)"
+                searchNotice = result.notice ?? "\(searchResultLabel) · \(visibleMessages.count) in \(title)"
                 searching = false
             } catch is CancellationError { } catch {
+                guard !Task.isCancelled else { return }
                 searchNotice = "Semantic search unavailable. Showing text matches."
                 semanticResults = nil; searching = false
             }

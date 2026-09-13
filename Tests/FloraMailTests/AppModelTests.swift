@@ -307,7 +307,7 @@ struct AppModelTests {
         model.searchText = "PHYS 204"
         #expect(model.visibleMessages.contains { $0.id == source.id })
         let fallback = try await model.assistantSearch("PHYS 204")
-        #expect(fallback.notice.contains("conventional text matches"))
+        #expect(fallback.notice.contains("text matches"))
         #expect(fallback.messages.contains { $0.id == source.id })
         model.archive(source)
         #expect(model.state.messages.first { $0.id == source.id }?.folder == .archive)

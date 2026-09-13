@@ -96,6 +96,12 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             LocalAISettingsView()
+            Section("Adaptive categories") {
+                Toggle("Learn from my confirmed category choices", isOn: Binding(get: { model.state.preferences.learnCategoryPreferences }, set: { model.setCategoryLearning($0) }))
+                Text("After two matching choices for a sender in one account, Flora can suggest that category. Conflicting corrections suspend the pattern. Suggestions remain local and require acceptance; deleted categories stay deleted. Disabling this setting stops using history for suggestions.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            PersonalContextSettingsView()
             Section("Privacy & accounts") {
                 LabeledContent("Mail access", value: model.state.preferences.showDemoAccounts ? "Demo Mode" : "Real accounts · Per-account permission")
                 LabeledContent("AI connection", value: "Loopback only · No cloud fallback")
@@ -115,66 +121,5 @@ struct SettingsView: View {
                 Text("Clears generated results only. Your messages, drafts and accepted categories are kept.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding(12).frame(width: 650, height: 760)
-    }
-}
-
-struct AssistantView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var results: [MailMessage] = []
-    @State private var searched = false
-    @State private var busy = false
-    @State private var notice: String?
-    @State private var searchTask: Task<Void, Never>?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack { Label("Mail assistant", systemImage: "sparkle.magnifyingglass").font(.title2.weight(.semibold)); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
-            Text(model.state.preferences.aiMode == .mock ? "An optional way to find mail. Demo search uses keyword expansion and returns original messages." : "Find original messages using text search. Mailbox-wide semantic inference is not enabled in this local provider.").font(.callout).foregroundStyle(.secondary)
-            HStack {
-                TextField("Find messages about deadlines or meetings", text: $query).textFieldStyle(.roundedBorder).onSubmit(search)
-                Button("Find", action: search).disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy)
-            }
-            HStack {
-                ForEach(["Needs a reply", "School deadlines", "Project meeting"], id: \.self) { prompt in
-                    Button(prompt) { query = prompt; search() }.controlSize(.small)
-                }
-            }
-            if busy { ProgressView().controlSize(.small) }
-            if let notice { Text(notice).font(.caption).foregroundStyle(.secondary) }
-            if searched && results.isEmpty { EmptyMailView(title: "No matching messages", message: "Try a sender, subject, or topic.", icon: "magnifyingglass") }
-            else {
-                List(results) { message in
-                    Button {
-                        model.openMessage(message.id); dismiss()
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(message.subject).font(.headline)
-                            Text("\(message.from.name) · \(message.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
-                            Text(message.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                }.listStyle(.inset)
-            }
-            Text("Read-only · No actions are executed from this panel").font(.caption).foregroundStyle(.secondary)
-        }.padding(24).frame(width: 650, height: 550)
-            .onDisappear { searchTask?.cancel() }
-    }
-    private func search() {
-        searchTask?.cancel()
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        busy = true; searched = false; notice = nil
-        searchTask = Task { @MainActor in
-            do {
-                let result = try await model.assistantSearch(text)
-                try Task.checkCancellation()
-                results = result.messages
-                notice = result.notice
-            } catch is CancellationError { return } catch {
-                notice = error.localizedDescription
-            }
-            busy = false; searched = true
-        }
     }
 }

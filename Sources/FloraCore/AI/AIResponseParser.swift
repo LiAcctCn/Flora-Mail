@@ -52,6 +52,38 @@ enum AIResponseParser {
         try text(object(content, keys: ["text"])["text"], name: "revised draft", max: 24_000)
     }
 
+    static func expansion(_ content: String, query: String, provider: String) throws -> SearchQueryExpansion {
+        let root = try object(content, keys: ["terms"])
+        let terms = try list(root["terms"], name: "search terms", max: 24).map { value in
+            let group = try fields(value, keys: ["term", "alternatives"])
+            return SearchExpansionTerm(term: try text(group["term"], name: "query term", max: 80),
+                                       alternatives: try list(group["alternatives"], name: "alternatives", max: 5).map {
+                try text($0, name: "alternative", max: 80)
+            })
+        }
+        let result = SearchQueryExpansion(terms: terms, provider: provider, mode: .semanticExpansion)
+        try MailIntelligenceService.validate(result, query: query)
+        return result
+    }
+
+    static func answer(_ content: String, request: AssistantRequest, provider: String) throws -> AssistantAnswer {
+        let root = try object(content, keys: ["claims"])
+        let claims = try list(root["claims"], name: "claims", max: 6).map { value in
+            let claim = try fields(value, keys: ["text", "citations"])
+            let citations = try list(claim["citations"], name: "citations", max: 3).map { value in
+                let citation = try fields(value, keys: ["messageID", "quote"])
+                guard let id = UUID(uuidString: try text(citation["messageID"], name: "message ID", max: 36)) else {
+                    throw invalid("An assistant citation has an invalid message ID.")
+                }
+                return AssistantCitation(messageID: id, quote: try text(citation["quote"], name: "quote", max: 600))
+            }
+            return AssistantClaim(text: try text(claim["text"], name: "claim", max: 1_500), citations: citations)
+        }
+        let result = AssistantAnswer(claims: claims, provider: provider)
+        try MailIntelligenceService.validate(result, request: request)
+        return result
+    }
+
     private static func object(_ content: String, keys: Set<String>) throws -> [String: Any] {
         guard content.utf8.count <= 150_000 else { throw invalid("The response exceeds the allowed size.") }
         let data = Data(content.utf8)

@@ -13,6 +13,8 @@
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSCalendarsFullAccessUsageDescription</key><string>With your permission, Flora reads only the calendar time window relevant to a meeting you choose to inspect. Flora does not create or modify events.</string>
+    <key>NSContactsUsageDescription</key><string>With your permission, Flora looks up only the sender of the message you choose to inspect. Flora does not modify contacts or provide your address book to AI.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>

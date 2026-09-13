@@ -11,9 +11,19 @@ public protocol AIProvider: Sendable {
     func rewrite(_ text: String, tool: WritingTool) async throws -> String
     func rewrite(_ text: String, tool: WritingTool, context: MailMessage?) async throws -> String
     func semanticSearch(_ query: String, messages: [MailMessage]) async throws -> [UUID]
+    func expandSearchQuery(_ query: String) async throws -> SearchQueryExpansion
+    func answer(_ request: AssistantRequest) async throws -> AssistantAnswer
 }
 
 public extension AIProvider {
+    func expandSearchQuery(_ query: String) async throws -> SearchQueryExpansion {
+        try Task.checkCancellation()
+        throw AIError.unsupportedCapability
+    }
+    func answer(_ request: AssistantRequest) async throws -> AssistantAnswer {
+        try Task.checkCancellation()
+        throw AIError.unsupportedCapability
+    }
     func rewrite(_ text: String, tool: WritingTool, context: MailMessage?) async throws -> String {
         try await rewrite(text, tool: tool)
     }
@@ -31,6 +41,7 @@ public enum AIError: LocalizedError, Equatable, Sendable {
     case unsupportedRuntime
     case unsupportedCapability
     case inputTooLong
+    case queryTooLong
     case emptyText
     case timedOut
 
@@ -50,6 +61,8 @@ public enum AIError: LocalizedError, Equatable, Sendable {
             "This AI capability is not supported by the selected local model or provider. Normal mail controls remain available."
         case .inputTooLong:
             "This content exceeds the Local AI input limit. Writing tools accept drafts of at most 12,000 characters. Your original content is unchanged."
+        case .queryTooLong:
+            "Search and assistant queries must be at most 500 characters. Shorten the question and try again."
         case .emptyText:
             "Add some text before using a writing tool."
         case .timedOut:

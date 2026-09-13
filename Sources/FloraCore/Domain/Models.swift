@@ -295,18 +295,21 @@ public struct UserPreferences: Codable, Equatable, Sendable {
     public var localAI: AIModelConfiguration
     public var showDemoAccounts: Bool
     public var mailSyncSettings: MailSyncSettings
-    public init(aiMode: AIMode = .mock, localAI: AIModelConfiguration = AIModelConfiguration(), showDemoAccounts: Bool = true, mailSyncSettings: MailSyncSettings = MailSyncSettings()) {
+    public var learnCategoryPreferences: Bool
+    public init(aiMode: AIMode = .mock, localAI: AIModelConfiguration = AIModelConfiguration(), showDemoAccounts: Bool = true, mailSyncSettings: MailSyncSettings = MailSyncSettings(), learnCategoryPreferences: Bool = false) {
         self.aiMode = aiMode; self.localAI = localAI
         self.showDemoAccounts = showDemoAccounts
         self.mailSyncSettings = mailSyncSettings
+        self.learnCategoryPreferences = learnCategoryPreferences
     }
-    private enum CodingKeys: String, CodingKey { case aiMode, localAI, showDemoAccounts, mailSyncSettings }
+    private enum CodingKeys: String, CodingKey { case aiMode, localAI, showDemoAccounts, mailSyncSettings, learnCategoryPreferences }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         aiMode = try values.decode(AIMode.self, forKey: .aiMode)
         localAI = try values.decodeIfPresent(AIModelConfiguration.self, forKey: .localAI) ?? AIModelConfiguration()
         showDemoAccounts = try values.decodeIfPresent(Bool.self, forKey: .showDemoAccounts) ?? true
         mailSyncSettings = try values.decodeIfPresent(MailSyncSettings.self, forKey: .mailSyncSettings) ?? MailSyncSettings()
+        learnCategoryPreferences = try values.decodeIfPresent(Bool.self, forKey: .learnCategoryPreferences) ?? false
     }
 }
 
