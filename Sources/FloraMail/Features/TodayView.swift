@@ -42,7 +42,7 @@ struct TodayView: View {
                 }
                 HStack(spacing: 7) {
                     Image(systemName: model.aiEnabled ? "sparkles" : "hand.raised").foregroundStyle(Color.floraAccent)
-                    Text(model.aiEnabled ? "Priority uses mail status, explained text rules and source-linked \(model.aiLabel) suggestions." : "AI is off. This dashboard uses mail status and local text rules; normal mail controls remain available.")
+                    Text(model.aiEnabled ? "Priority uses mail status, explained text rules and source-linked \(model.aiLabel) suggestions." : (model.state.preferences.researchMode == .traditional || model.state.preferences.automationLevel == .manual ? "Traditional overview · Cached flags, importance and read status. Assistance is off." : "AI is off. This dashboard uses mail status and local text rules; normal mail controls remain available."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if briefing.isTruncated {

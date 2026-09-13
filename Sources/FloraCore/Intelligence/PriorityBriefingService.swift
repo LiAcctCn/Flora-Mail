@@ -6,7 +6,7 @@ import Foundation
 public struct PriorityBriefingService: Sendable {
     public init() {}
     public func build(snapshot: AppSnapshot, scope: MailIntelligenceScope, actions: [ActionItem] = [], aiProviderLabel: String? = nil,
-                      now: Date = Date(), calendar: Calendar = .current, limit: Int = 250) -> DailyBriefingSnapshot {
+                      now: Date = Date(), calendar: Calendar = .current, limit: Int = 250, includeTextRules: Bool = true) -> DailyBriefingSnapshot {
         let accounts = snapshot.accounts.filter { account in
             switch scope { case .account(let id): account.id == id; case .demo: !account.isRemote; case .realAccounts: account.isRemote }
         }
@@ -25,7 +25,7 @@ public struct PriorityBriefingService: Sendable {
         var ranked: [(item: BriefingItem, score: Int)] = []
         for message in considered {
             guard let account = accountByID[message.accountID] else { continue }
-            let lines = BriefingTextRules.directLines(message.body)
+            let lines = includeTextRules ? BriefingTextRules.directLines(message.body) : []
             let directText = lines.joined(separator: "\n")
             let messageAge = calendar.dateComponents([.day], from: calendar.startOfDay(for: message.date), to: calendar.startOfDay(for: now)).day ?? Int.max
             var signals: [(signal: BriefingSignal, score: Int)] = []
@@ -84,7 +84,7 @@ public struct PriorityBriefingService: Sendable {
                     }
                 }
             }
-            if signals.allSatisfy({ $0.score < 50 }), BriefingTextRules.automatedSender(message.from.email) || BriefingTextRules.lowPriorityQuote(in: lines) != nil {
+            if includeTextRules, signals.allSatisfy({ $0.score < 50 }), BriefingTextRules.automatedSender(message.from.email) || BriefingTextRules.lowPriorityQuote(in: lines) != nil {
                 signals.append((BriefingSignal(messageID: message.id, kind: .lowPriority, title: "Review later", explanation: "An automated sender name or subscription footer suggests this may be a routine update. This text rule can be wrong; the message remains in Inbox.", provenance: .textRule, sourceQuote: BriefingTextRules.lowPriorityQuote(in: lines)), 5))
             }
             if !message.isRead {

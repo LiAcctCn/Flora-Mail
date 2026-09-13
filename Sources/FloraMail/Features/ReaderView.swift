@@ -60,13 +60,13 @@ struct ReaderView: View {
             VStack(alignment: .leading, spacing: 22) {
                 messageHeader
                 Divider()
-                if model.aiEnabled {
+                if model.embeddedAIEnabled {
                     summarySection
                     classificationSection
                 }
                 originalSection
-                PersonalContextView(message: currentMessage)
-                if model.aiEnabled {
+                if model.embeddedAIEnabled { PersonalContextView(message: currentMessage) }
+                if model.embeddedAIEnabled {
                     actionSection
                     replySection
                     if !assistanceErrors.isEmpty {
@@ -113,7 +113,7 @@ struct ReaderView: View {
             }
         }
         .onChange(of: message.id) { _, _ in
-            showOriginal = !model.aiEnabled
+            showOriginal = !model.embeddedAIEnabled
             showHTML = false
             originalVisibilityWasChosen = false
             showSources = false
@@ -336,10 +336,11 @@ struct ReaderView: View {
                     if currentMessage.categoryID != category.id {
                         Button("Accept \(category.name)") { _ = model.acceptClassification(suggestion) }
                             .accessibilityIdentifier("acceptClassification")
-                        Button("Ignore") { ignoredClassification = true }
+                            .disabled(!model.canAcceptAISuggestions)
+                        Button("Ignore") { ignoredClassification = true; model.recordResearch(.aiRejected) }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                     }
-                    Text("Local category only · Server folders unchanged")
+                    Text(model.canAcceptAISuggestions ? "Local category only · Server folders unchanged" : "Level 1 previews only · Change assistance level to accept AI suggestions")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -352,18 +353,19 @@ struct ReaderView: View {
                 Button {
                     originalVisibilityWasChosen = true
                     showOriginal.toggle()
+                    if showOriginal { model.recordResearch(.originalShown) }
                 } label: {
-                    Label(showOriginal || !model.aiEnabled ? "Original Email" : "Show Original Email",
-                          systemImage: showOriginal || !model.aiEnabled ? "chevron.down" : "chevron.right")
+                    Label(showOriginal || !model.embeddedAIEnabled ? "Original Email" : "Show Original Email",
+                          systemImage: showOriginal || !model.embeddedAIEnabled ? "chevron.down" : "chevron.right")
                         .font(.headline)
                 }
                 .buttonStyle(.plain)
-                .disabled(!model.aiEnabled)
+                .disabled(!model.embeddedAIEnabled)
                 .accessibilityIdentifier("showOriginalEmail")
                 Spacer()
                 Text(currentMessage.htmlBody == nil ? "Original content" : "Safe text from original HTML").font(.caption).foregroundStyle(.secondary)
             }
-            if showOriginal || !model.aiEnabled {
+            if showOriginal || !model.embeddedAIEnabled {
                 ForEach(currentMessage.contentWarnings, id: \.self) { warning in
                     Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
                 }
@@ -535,6 +537,7 @@ struct ReaderView: View {
                     .foregroundStyle(Color.floraAccent)
                     .padding(.vertical, 5)
                     .help("Open this suggestion in the composer")
+                    .disabled(!model.canAcceptAISuggestions)
                 }
             }
         }
@@ -602,7 +605,7 @@ struct ReaderView: View {
         assistanceErrors = []
         ignoredClassification = false
         wasCancelled = false
-        guard model.aiEnabled else { isLoading = false; showOriginal = true; return }
+        guard model.embeddedAIEnabled else { isLoading = false; showOriginal = true; return }
         isLoading = true
         loadingStage = "Preparing summary…"
         if model.state.preferences.aiMode == .local && !originalVisibilityWasChosen {

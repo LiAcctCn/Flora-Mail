@@ -33,13 +33,20 @@ public final class JSONMailRepository: MailRepository {
         guard let header = try? decoder.decode(Header.self, from: data) else {
             throw RepositoryError.unreadableStore
         }
-        guard header.schemaVersion == 1 else { throw RepositoryError.unsupportedSchema(header.schemaVersion) }
-        do { return try decoder.decode(AppSnapshot.self, from: data) }
+        guard header.schemaVersion == 1 || header.schemaVersion == 2 else { throw RepositoryError.unsupportedSchema(header.schemaVersion) }
+        do {
+            var snapshot = try decoder.decode(AppSnapshot.self, from: data)
+            // Only a version-2 writer may persist automation consumption and
+            // remote outcome journals. Old binaries reject this store version.
+            snapshot.schemaVersion = 2
+            if header.schemaVersion == 1 { try save(snapshot) }
+            return snapshot
+        }
         catch { throw RepositoryError.unreadableStore }
     }
 
     public func save(_ snapshot: AppSnapshot) throws {
-        guard snapshot.schemaVersion == 1 else { throw RepositoryError.unsupportedSchema(snapshot.schemaVersion) }
+        guard snapshot.schemaVersion == 2 else { throw RepositoryError.unsupportedSchema(snapshot.schemaVersion) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot)

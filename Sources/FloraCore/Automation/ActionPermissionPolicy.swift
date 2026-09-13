@@ -16,6 +16,7 @@ public enum MailActionError: LocalizedError, Equatable {
     case noUndo
     case emptySelection
     case readOnlyAccount
+    case assistanceDisabled
 
     public var errorDescription: String? {
         switch self {
@@ -33,6 +34,7 @@ public enum MailActionError: LocalizedError, Equatable {
         case .outsideAutomationScope: "The proposed action falls outside this rule’s sender, age, or Inbox scope."
         case .noUndo: "There is no action to undo in this session."
         case .emptySelection: "Select at least one message."
+        case .assistanceDisabled: "This interaction mode does not allow AI-assisted changes. Manual controls remain available."
         case .readOnlyAccount: "Review a real account action and authorize mailbox changes in Accounts settings."
         }
     }
@@ -40,7 +42,7 @@ public enum MailActionError: LocalizedError, Equatable {
 
 /// Execution authority is evaluated here, independently of AI explanations.
 public enum ActionPermissionPolicy {
-    public static func validate(_ proposal: ProposedAction, confirmed: Bool, ruleID: UUID?, state: AppSnapshot, now: Date) throws {
+    public static func validate(_ proposal: ProposedAction, confirmed: Bool, ruleID: UUID?, state: AppSnapshot, now: Date, automation: AuthorizedAutomationDispatch? = nil) throws {
         // This gate runs before confirmation or automation checks. Neither user
         // confirmation nor a saved automation rule upgrades a real account.
         switch proposal.type {
@@ -60,24 +62,13 @@ public enum ActionPermissionPolicy {
             }
         default: break // Categories, classification and saved drafts are local annotations.
         }
+        if proposal.origin == .ai, state.preferences.automationLevel < .suggestion || state.preferences.researchMode == .traditional {
+            throw MailActionError.assistanceDisabled
+        }
         if proposal.origin == .automation {
-            guard let ruleID,
-                  let rule = state.rules.first(where: { $0.id == ruleID }),
-                  rule.enabled, let authorizedAt = rule.authorizedAt, authorizedAt <= now,
-                  rule.olderThanDays >= 1, !rule.senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { throw MailActionError.invalidAutomation }
-            guard case .archive(let ids) = proposal.type, !ids.isEmpty else {
-                throw MailActionError.outsideAutomationScope
-            }
-            let cutoff = now.addingTimeInterval(-Double(rule.olderThanDays) * 86_400)
-            let sender = rule.senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            for id in ids {
-                guard let message = state.messages.first(where: { $0.id == id }),
-                      message.folder == .inbox, message.date < cutoff,
-                      message.from.email.lowercased() == sender else {
-                    throw MailActionError.outsideAutomationScope
-                }
-            }
+            guard let automation, ruleID == automation.ruleID else { throw MailActionError.invalidAutomation }
+            try AutomationPolicy.validateDispatch(automation, state: state, now: now)
+            guard proposal.id == automation.id, proposal.type == automation.action.localAction(messageID: automation.messageID) else { throw MailActionError.outsideAutomationScope }
             return
         }
         // A supplied rule never grants authority to a different action origin.

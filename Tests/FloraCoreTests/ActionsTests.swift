@@ -170,12 +170,19 @@ final class ActionsTests: XCTestCase {
 
     func testAutomationRequiresPersistedEnabledAuthorizedRule() async throws {
         let executor = executor()
+        try executor.updatePreferences(UserPreferences(automationLevel: .rules))
         let proposal = ProposedAction(type: .archive(messageIDs: [executor.state.messages[0].id]), explanation: "Archive newsletters", origin: .automation)
-        let rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true)
+        let rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, accountID: executor.state.accounts[0].id, expiresAt: timestamp.addingTimeInterval(86_400))
         XCTAssertThrowsError(try executor.execute(proposal, confirmed: true, ruleID: rule.id))
         XCTAssertThrowsError(try executor.saveAutomationRule(rule))
-        try executor.saveAutomationRule(rule, confirmed: true)
-        try executor.execute(proposal, ruleID: rule.id)
+        let saved = try executor.saveAutomationRule(rule, confirmed: true)
+        // An approved rule is not a blanket bypass for arbitrary proposals.
+        XCTAssertThrowsError(try executor.execute(proposal, confirmed: true, ruleID: rule.id))
+        let coordinator = AutomationCoordinator(executor: executor, now: { self.timestamp })
+        try await coordinator.run(preview: coordinator.preview(rule: saved)) { capability in
+            let action = try executor.executeAutomation(capability)
+            return AutomationDispatchReceipt(actionID: action.id, isRemote: false)
+        }
         XCTAssertEqual(executor.state.messages[0].folder, .archive)
         XCTAssertTrue(executor.state.history.last?.proposal.explanation.contains(rule.name) == true)
     }
@@ -184,15 +191,25 @@ final class ActionsTests: XCTestCase {
         let initial = fixture()
         for violation in ["sender", "age", "folder", "action"] {
             var state = initial
-            let rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, authorizedAt: timestamp.addingTimeInterval(-100))
+            let rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, authorizedAt: timestamp.addingTimeInterval(-100), accountID: state.accounts[0].id, expiresAt: timestamp.addingTimeInterval(86_400))
             state.rules = [rule]
+            state.preferences.automationLevel = .rules
             if violation == "sender" { state.messages[0].from.email = "someone@example.com" }
             if violation == "age" { state.messages[0].date = timestamp.addingTimeInterval(-2 * 86_400) }
             if violation == "folder" { state.messages[0].folder = .sent }
             let executor = executor(state)
             let action: ActionType = violation == "action" ? .move(messageIDs: [state.messages[0].id], folder: .trash) : .archive(messageIDs: [state.messages[0].id])
             XCTAssertThrowsError(try executor.execute(ProposedAction(type: action, explanation: "Outside scope", origin: .automation), confirmed: true, ruleID: rule.id), violation) {
-                XCTAssertEqual($0 as? MailActionError, .outsideAutomationScope)
+                XCTAssertEqual($0 as? MailActionError, .invalidAutomation)
+            }
+            if violation != "action" {
+                let coordinator = AutomationCoordinator(executor: executor, now: { self.timestamp })
+                let preview = try coordinator.preview(rule: rule)
+                XCTAssertTrue(preview.messageIDs.isEmpty, violation)
+                do {
+                    try await coordinator.run(preview: preview) { _ in XCTFail("Out-of-scope message dispatched"); throw AutomationError.invalidScope }
+                    XCTFail("Empty scope should not run")
+                } catch { XCTAssertEqual(error as? AutomationError, .emptyMatch) }
             }
             XCTAssertEqual(executor.state, state)
         }
@@ -200,7 +217,8 @@ final class ActionsTests: XCTestCase {
 
     func testAutomationChangesRequireNewExplicitConfirmation() async throws {
         let executor = executor()
-        var rule = AutomationRule(name: "Newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true)
+        try executor.updatePreferences(UserPreferences(automationLevel: .rules))
+        var rule = AutomationRule(name: "Newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, accountID: executor.state.accounts[0].id, expiresAt: timestamp.addingTimeInterval(86_400))
         try executor.saveAutomationRule(rule, confirmed: true)
         rule.olderThanDays = 1
         XCTAssertThrowsError(try executor.saveAutomationRule(rule))

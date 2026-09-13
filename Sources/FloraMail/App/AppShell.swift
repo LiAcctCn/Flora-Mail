@@ -23,12 +23,21 @@ struct AppShell: View {
                     Label(warning, systemImage: "externaldrive.badge.exclamationmark")
                         .font(.caption).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.1))
                 }
+                if let task = model.research.activeTask {
+                    HStack {
+                        Label("Research task: \(task.label)", systemImage: "stopwatch").font(.caption)
+                        Spacer()
+                        Button("Complete") { model.research.completeTask() }.controlSize(.small)
+                        Button("Abandon") { model.research.abandonTask() }.controlSize(.small)
+                    }.padding(10).background(.quaternary.opacity(0.3))
+                }
                 if !model.state.preferences.showDemoAccounts {
                     MailSyncStatusView()
                     Divider()
                 }
                 if model.destination == .today {
-                    TodayView()
+                    if model.state.preferences.researchMode == .chatFirst { AssistantView(embedded: true) }
+                    else { TodayView() }
                 } else if model.destination == .localDrafts || (model.destination == .folder(.drafts) && model.state.preferences.showDemoAccounts) {
                     DraftsView()
                 } else {
@@ -66,7 +75,10 @@ struct AppShell: View {
                     }
                     Button { model.showingAccountConnection = true } label: { Label("Add Account", systemImage: "person.badge.plus") }.help("Connect Google, Microsoft or iCloud Mail")
                     Button { model.showingHistory = true } label: { Label("Activity", systemImage: "clock.arrow.circlepath") }.help("Action history and Undo")
-                    Button { model.showingAssistant.toggle() } label: { Label("Assistant", systemImage: "sparkle.magnifyingglass") }.help("Open optional mail assistant")
+                    Button { model.showingAutomation = true } label: { Label("Automation", systemImage: "checklist") }.help("Review explicitly authorized rules")
+                    if model.state.preferences.researchMode != .traditional {
+                        Button { model.showingAssistant.toggle() } label: { Label("Assistant", systemImage: "sparkle.magnifyingglass") }.help("Open optional mail assistant")
+                    }
                     Button { model.compose() } label: { Label("Compose", systemImage: "square.and.pencil") }.disabled(!model.canCompose).help("New message (⌘N)")
                 }
             }
@@ -76,6 +88,7 @@ struct AppShell: View {
         .sheet(isPresented: $model.showingHistory) { ActivityView().environment(model) }
         .sheet(isPresented: $model.showingCategories) { CategoriesView().environment(model) }
         .sheet(isPresented: $model.showingAssistant) { AssistantView().environment(model) }
+        .sheet(isPresented: $model.showingAutomation) { AutomationView().environment(model) }
         .sheet(item: $model.pendingRemoteAction) { proposal in RemoteActionPreview(proposal: proposal).environment(model) }
         .confirmationDialog("Discard the recovered unsaved draft?", isPresented: $discardRecovery, titleVisibility: .visible) {
             Button("Discard Recovery Copy", role: .destructive) { model.discardRecoveredDraft() }
@@ -165,6 +178,7 @@ private struct MessageListView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Search \(model.title.lowercased())", text: $model.searchText)
                         .textFieldStyle(.plain).focused($searchFocused).accessibilityLabel("Search mail")
+                        .onSubmit { model.recordResearch(.search) }
                     if !model.searchText.isEmpty {
                         Button { model.searchText = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain).accessibilityLabel("Clear search")
                     }
@@ -175,7 +189,7 @@ private struct MessageListView: View {
                         Spacer()
                         if model.searching { ProgressView().controlSize(.mini) }
                         else if model.semanticResults != nil { Button("Use Text") { model.clearSemanticSearch() }.font(.caption) }
-                        else { Button("Try Semantic") { model.semanticSearch() }.font(.caption).disabled(!model.aiEnabled) }
+                        else if model.state.preferences.researchMode != .traditional { Button("Try Semantic") { model.semanticSearch() }.font(.caption).disabled(!model.aiEnabled) }
                     }
                 }
                 if let notice = model.searchNotice { Text(notice).font(.caption2).foregroundStyle(.secondary) }

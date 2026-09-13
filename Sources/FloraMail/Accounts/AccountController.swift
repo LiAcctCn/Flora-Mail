@@ -206,13 +206,7 @@ final class AccountController {
         await stopRequests(for: proposal.accountID)
         try Task.checkCancellation()
         guard let account = executor.state.accounts.first(where: { $0.id == proposal.accountID }) else { throw MailActionError.accountNotFound }
-        let writer: any RemoteMailWriter
-        if account.providerType == .iCloud {
-            writer = ICloudMailWriter(account: account, credentials: credentials)
-        } else {
-            guard let adapter = try makeProvider(account) as? any RemoteMailWriter else { throw MailActionError.readOnlyAccount }
-            writer = adapter
-        }
+        let writer = try makeWriter(account)
         let payloads: [OutgoingAttachment]
         switch proposal.action {
         case .syncDraft(let id), .sendDraft(let id):
@@ -221,6 +215,26 @@ final class AccountController {
         default: payloads = []
         }
         return try await remoteActions.execute(proposal, confirmed: true, writer: writer, attachments: payloads)
+    }
+
+    /// Only a core-validated rule run can supply this capability. The normal
+    /// confirmation path is deliberately not used to authorize automation.
+    func executeAutomation(_ dispatch: AuthorizedAutomationDispatch) async throws -> AutomationDispatchReceipt {
+        guard storageAvailable else { throw AccountConnectionError.storageUnavailable }
+        guard !connecting, !writingAccounts.contains(dispatch.accountID), !isDisconnecting(dispatch.accountID) else { throw AccountActionError.busy }
+        writingAccounts.insert(dispatch.accountID)
+        defer { writingAccounts.remove(dispatch.accountID); onChange?() }
+        await stopRequests(for: dispatch.accountID)
+        try Task.checkCancellation()
+        guard let account = executor.state.accounts.first(where: { $0.id == dispatch.accountID && $0.isRemote }) else { throw MailActionError.accountNotFound }
+        let record = try await remoteActions.executeAutomation(dispatch, writer: makeWriter(account))
+        return AutomationDispatchReceipt(actionID: record.id, isRemote: true)
+    }
+
+    private func makeWriter(_ account: MailAccount) throws -> any RemoteMailWriter {
+        if account.providerType == .iCloud { return ICloudMailWriter(account: account, credentials: credentials) }
+        guard let adapter = try makeProvider(account) as? any RemoteMailWriter else { throw MailActionError.readOnlyAccount }
+        return adapter
     }
 
     func disableMailboxActions(_ accountID: UUID) {

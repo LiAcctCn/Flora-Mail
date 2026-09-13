@@ -36,9 +36,9 @@ final class StabilityTests: XCTestCase {
         try executor.execute(ProposedAction(type: .archive(messageIDs: [messageID]), explanation: "Archived"))
         let draft = Draft(to: "news@example.com", subject: "Re: Proposal", body: "I will review it on Thursday.")
         try executor.execute(ProposedAction(type: .saveDraft(draft), explanation: "Saved reply"))
-        try executor.updatePreferences(UserPreferences(aiMode: .off))
-        let enabled = AutomationRule(name: "Old research updates", senderEmail: "news@example.com", olderThanDays: 30, enabled: true)
-        let disabled = AutomationRule(name: "Shopping updates", senderEmail: "shop@example.com", olderThanDays: 60)
+        try executor.updatePreferences(UserPreferences(aiMode: .off, automationLevel: .rules))
+        let enabled = AutomationRule(name: "Old research updates", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, accountID: original.accounts[0].id, expiresAt: timestamp.addingTimeInterval(86_400))
+        let disabled = AutomationRule(name: "Shopping updates", senderEmail: "shop@example.com", olderThanDays: 60, accountID: original.accounts[0].id)
         try executor.saveAutomationRule(enabled, confirmed: true)
         try executor.saveAutomationRule(disabled)
         let committed = executor.state
@@ -103,7 +103,8 @@ final class StabilityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("mail.json")
         let executor = ActionExecutor(repository: JSONMailRepository(url: url), initialState: fixture(), now: { self.timestamp })
-        var rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true)
+        try executor.updatePreferences(UserPreferences(automationLevel: .rules))
+        var rule = AutomationRule(name: "Old newsletters", senderEmail: "news@example.com", olderThanDays: 30, enabled: true, accountID: executor.state.accounts[0].id, expiresAt: timestamp.addingTimeInterval(86_400))
         try executor.saveAutomationRule(rule, confirmed: true)
         rule.enabled = false
         try executor.saveAutomationRule(rule)

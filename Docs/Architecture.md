@@ -97,9 +97,13 @@ Cache writes and connections stay outside SwiftUI. Classification persistence is
 
 ## Automation scope
 
-The core supports only a narrow Demo-account archive rule: exact sender address, Inbox messages, and an explicit minimum age. A rule must be saved, enabled and authorized; changing/enabling it requires fresh confirmation. A proposal is rejected if any selected message falls outside the persisted rule’s scope or if the operation is not archive. Supplying a rule ID never grants permission to a different action origin.
+AutomationCoordinator validates explicitly saved rules for one account, exact sender, Inbox age, action (Archive or Mark read), batch limit and expiry. It binds previews to the full reviewed source content and never substitutes new messages into a batch. Level 3 permits explicitly authorized reusable rules; Level 4 consumes a separate expiring grant for the exact preview before dispatch. Delegation-only rules remain restricted after lowering the global level. Revocation, expiry, changed permissions and changed source state stop further dispatches.
 
-No rule editor, scheduler, learned authorization, or background automation executes in this milestone. Level 0 (AI off), informational assistance and explicit suggestion acceptance are represented in the interface. Higher delegation levels and comparative research modes remain future work.
+Only the coordinator issues single-message AuthorizedAutomationDispatch capabilities. Demo operations use ActionExecutor; real operations use the existing serialized account gateway and RemoteActionCoordinator. Durable run and action journals distinguish acknowledged, failed, cancelled and uncertain operations. There is no automatic scheduler, send rule, permission learning or background agent. The UI offers Run Now after review. See [automation details](Automation.md).
+
+Schema 2 preserves consumed grants and execution journals. Migration saves atomically before publishing the migrated state; older binaries reject the upgraded store rather than silently dropping new authorization records.
+
+ResearchMode changes presentation independently of provider permissions and automation authority. Traditional hides assistance, Chat First uses the assistant as Today, and Hybrid keeps embedded assistance plus the optional assistant. ResearchController wraps an opt-in, fixed-schema recorder with a separate access-restricted JSON repository. It receives enum events and monotonic durations, never mail, account IDs, queries or provider errors. Recording defaults off, stops immediately on opt-out and fails closed on storage errors. These controls support study preparation, not research conclusions. See [research privacy](Research.md).
 
 ## Message and attachment safety
 
@@ -116,7 +120,7 @@ The REST transport allows only fixed official HTTPS hosts, rejects redirects, an
 3. Replace whole-file persistence when mailbox scale warrants indexed storage and incremental updates; add a local embedding index only with explicit account scope.
 4. Expand safe HTML compatibility fixtures without introducing active content or remote tracking.
 5. Validate real provider mutations with controlled accounts, preserving preview, permission checks and accurate action history.
-6. Add explicit research configuration and privacy-minimized evaluation instrumentation only after defining the study.
+6. Validate research task suitability, condition parity and the evaluation protocol before collecting participant data.
 
 ## Outgoing mail safety
 

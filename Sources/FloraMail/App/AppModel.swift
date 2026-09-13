@@ -11,7 +11,9 @@ enum MailDestination: Hashable {
 final class AppModel {
     private(set) var state: AppSnapshot
     var destination: MailDestination = .today
-    var selectedMessageID: UUID?
+    var selectedMessageID: UUID? {
+        didSet { if selectedMessageID != nil && selectedMessageID != oldValue { research.record(.messageOpened) } }
+    }
     var searchText = ""
     var semanticResults: [UUID]?
     private(set) var searchResultLabel = "Text matches"
@@ -39,6 +41,7 @@ final class AppModel {
     var showingHistory = false
     var showingCategories = false
     var showingAssistant = false
+    var showingAutomation = false
     var attentionItems: [ActionItem] = []
     private(set) var briefingProviderLabel: String?
     var briefingError: String?
@@ -55,6 +58,10 @@ final class AppModel {
     private let executor: ActionExecutor
     let accountController: AccountController
     let personalContext = PersonalContextController()
+    let research: ResearchController
+    let automationController: AutomationController
+    private var recoveringFromError: UUID?
+    private(set) var researchOptOutSavePending = false
     private var mockAI: any AIProvider = MockAIProvider()
     private var localAI: any AIProvider = LocalAIProvider()
     private var cacheStore: any AICacheStore = MemoryAICacheStore()
@@ -86,6 +93,9 @@ final class AppModel {
         persistentStorageAvailable = !storageFailed
         accountController = AccountController(executor: executor, storageURL: resolvedURL, storageAvailable: !storageFailed,
                                               credentials: credentials, providerOverride: remoteProviderFactory)
+        automationController = AutomationController(executor: executor, accountController: accountController, storageAvailable: !storageFailed)
+        research = ResearchController(repository: storageFailed ? MemoryResearchMetricsRepository() : JSONResearchMetricsRepository(url: resolvedURL.deletingLastPathComponent().appendingPathComponent("research-metrics.json")))
+        research.configure(mode: state.preferences.researchMode, enabled: !storageFailed && state.preferences.researchMetricsEnabled)
         state = executor.state
         if !storageFailed {
             cacheStore = JSONAICacheStore(url: resolvedURL.deletingLastPathComponent().appendingPathComponent("ai-cache.json"))
@@ -99,14 +109,22 @@ final class AppModel {
             } catch { editorRecoveryError = "The unsaved-draft recovery file could not be read. Existing saved drafts are preserved." }
         }
         accountController.onChange = { [weak self] in self?.refresh() }
+        automationController.onChange = { [weak self] in self?.refresh() }
         accountController.onConnected = { [weak self] id in
             self?.setDemoMode(false)
             self?.navigate(.account(id))
         }
     }
 
-    var aiRequestIdentity: String { "\(state.preferences.aiMode.rawValue)-\(aiRevision)-\(state.preferences.showDemoAccounts)-\(accountScopeID?.uuidString ?? "all")" }
-    var aiEnabled: Bool { state.preferences.aiMode != .off }
+    var aiRequestIdentity: String { "\(state.preferences.aiMode.rawValue)-\(state.preferences.automationLevel)-\(state.preferences.researchMode)-\(aiRevision)-\(state.preferences.showDemoAccounts)-\(accountScopeID?.uuidString ?? "all")" }
+    var aiEnabled: Bool { state.preferences.aiMode != .off && state.preferences.automationLevel != .manual && state.preferences.researchMode != .traditional }
+    var embeddedAIEnabled: Bool { aiEnabled && state.preferences.researchMode == .hybrid }
+    var canAcceptAISuggestions: Bool { aiEnabled && state.preferences.automationLevel != .information }
+    var aiDisabledExplanation: String {
+        if state.preferences.researchMode == .traditional { return "Traditional GUI mode keeps AI assistance hidden. Change the interaction mode in Settings to use AI." }
+        if state.preferences.automationLevel == .manual { return "Level 0 keeps assistance off. Normal mail controls remain available." }
+        return "AI is off. Choose Demo AI or Local AI in Settings to enable assistance."
+    }
     var canUndo: Bool { executor.canUndo }
     var canCompose: Bool { !displayedAccounts.isEmpty }
     var canMutateSelection: Bool { selectedMessage.map { !isReadOnly($0) } ?? false }
@@ -140,8 +158,11 @@ final class AppModel {
     }
     func setDemoMode(_ enabled: Bool) {
         do {
+            let changedScope = state.preferences.showDemoAccounts != enabled
             var preferences = state.preferences; preferences.showDemoAccounts = enabled
-            try executor.updatePreferences(preferences); refresh(); resetAIRequests(); navigate(.today)
+            try executor.updatePreferences(preferences)
+            if changedScope { automationController.invalidateScope() }
+            refresh(); resetAIRequests(); navigate(.today)
         } catch { report(error) }
     }
     func saveSyncSettings(_ settings: MailSyncSettings) {
@@ -186,6 +207,7 @@ final class AppModel {
     }
     private func refresh() {
         state = executor.state
+        automationController.refresh()
         if case .category(let id) = destination, !state.categories.contains(where: { $0.id == id }) {
             navigate(.folder(.inbox))
         }
@@ -278,10 +300,26 @@ final class AppModel {
             refresh()
             statusMessage = action.explanation
             statusOffersUndo = executed.canUndo
+            recordSuccessfulAction()
+            if case .classify = action.type, action.origin == .user { research.record(.correction) }
             return true
         } catch { report(error); return false }
     }
-    func report(_ error: Error) { if !(error is CancellationError) { errorMessage = error.localizedDescription } }
+    func report(_ error: Error) {
+        if !(error is CancellationError) { errorMessage = error.localizedDescription; recordResearchError() }
+    }
+    func recordResearch(_ event: ResearchInteraction) { research.record(event) }
+    private func recordResearchError() {
+        recoveringFromError = nil
+        guard research.isEnabled else { return }
+        research.record(.error)
+        if research.isEnabled { recoveringFromError = research.recordingEpoch }
+    }
+    private func recordSuccessfulAction() {
+        research.record(.actionExecuted)
+        if research.isEnabled, recoveringFromError == research.recordingEpoch { research.record(.errorRecovery) }
+        recoveringFromError = nil
+    }
     func openMessage(_ id: UUID) {
         guard let message = state.messages.first(where: { $0.id == id }) else { return }
         guard let account = state.accounts.first(where: { $0.id == message.accountID }) else { return }
@@ -299,6 +337,7 @@ final class AppModel {
     }
     func navigate(_ value: MailDestination) {
         destination = value; selectedMessageID = nil; searchText = ""; clearSemanticSearch()
+        research.record(.navigation)
     }
     func archive(_ message: MailMessage) {
         if perform(ProposedAction(type: .archive(messageIDs: [message.id]), explanation: "Archived “\(message.subject)”.")) { selectedMessageID = nil }
@@ -313,19 +352,24 @@ final class AppModel {
         perform(ProposedAction(type: .markRead(messageIDs: [message.id], isRead: !message.isRead), explanation: message.isRead ? "Marked unread." : "Marked read."))
     }
     func undo() {
-        do { try executor.undo(); refresh(); statusMessage = "Undid the last change." }
+        do { try executor.undo(); refresh(); statusMessage = "Undid the last change."; research.record(.undo) }
         catch { report(error) }
     }
     @discardableResult func acceptClassification(_ suggestion: ClassificationSuggestion) -> Bool {
         do {
+            guard canAcceptAISuggestions else { throw MailActionError.confirmationRequired }
             let executed = try executor.acceptClassification(suggestion)
             refresh(); statusMessage = "Category accepted locally. You can undo this change."
             statusOffersUndo = executed.canUndo
+            research.record(.aiAccepted)
             return true
         } catch { report(error); return false }
     }
     func compose(replyTo message: MailMessage? = nil, forward: Bool = false, replyAll: Bool = false, suggestedText: String? = nil) {
+        guard suggestedText == nil || canAcceptAISuggestions else { return }
         guard composingDraft == nil, pendingEditorRestoration == nil else { return }
+        research.record(.compose)
+        if suggestedText != nil { research.record(.aiAccepted) }
         if let message {
             let prefix = forward ? "Fwd: " : "Re: "
             let subject = message.subject.lowercased().hasPrefix(prefix.lowercased()) ? message.subject : prefix + message.subject
@@ -372,9 +416,11 @@ final class AppModel {
         do {
             _ = try await accountController.execute(proposal)
             refresh(); statusMessage = "Mail service confirmed the action. View Activity for details."
+            recordSuccessfulAction()
             return nil
         } catch {
             refresh()
+            recordResearchError()
             return error.localizedDescription
         }
     }
@@ -424,6 +470,42 @@ final class AppModel {
             var preferences = state.preferences; preferences.learnCategoryPreferences = enabled
             try executor.updatePreferences(preferences); refresh(); resetAIRequests()
         } catch { report(error) }
+    }
+    func setAutomationLevel(_ level: AutomationLevel) {
+        do {
+            var preferences = state.preferences; preferences.automationLevel = level
+            try executor.updatePreferences(preferences); refresh(); resetAIRequests()
+            automationController.cancel()
+        } catch { report(error) }
+    }
+    func setResearchMode(_ mode: ResearchMode) {
+        do {
+            var preferences = state.preferences; preferences.researchMode = mode
+            try executor.updatePreferences(preferences); refresh(); resetAIRequests()
+            if mode == .traditional { showingAssistant = false }
+            personalContext.cancel()
+            automationController.cancel()
+            recoveringFromError = nil
+            research.configure(mode: mode, enabled: persistentStorageAvailable && preferences.researchMetricsEnabled && research.isEnabled)
+        } catch { report(error) }
+    }
+    func setResearchMetricsEnabled(_ enabled: Bool) {
+        guard persistentStorageAvailable else { return }
+        // Opt-out takes effect even if the main mail store cannot be saved.
+        recoveringFromError = nil
+        if !enabled { research.configure(mode: state.preferences.researchMode, enabled: false) }
+        do {
+            var preferences = state.preferences; preferences.researchMetricsEnabled = enabled
+            try executor.updatePreferences(preferences); refresh()
+            researchOptOutSavePending = false
+            if enabled, !research.isEnabled { research.retryRecording(mode: preferences.researchMode) }
+            else { research.configure(mode: preferences.researchMode, enabled: enabled) }
+        } catch {
+            if !enabled {
+                researchOptOutSavePending = true
+                errorMessage = "Recording has stopped for this session, but the saved preference could not be updated. Use Retry Saving Opt-Out in Research Settings before restarting Flora Mail."
+            } else { report(error) }
+        }
     }
     func updateAIMode(_ mode: AIMode) {
         do {
@@ -482,6 +564,7 @@ final class AppModel {
     }
     private func performAI<T: Sendable>(for message: MailMessage? = nil, operation: (any AIProvider) async throws -> T) async throws -> T {
         try requireAI()
+        research.record(.aiRequested)
         let identity = aiRequestIdentity
         let mode = state.preferences.aiMode
         do {
@@ -550,9 +633,12 @@ final class AppModel {
     }
     var dailyBriefing: DailyBriefingSnapshot {
         let scope: MailIntelligenceScope = accountScopeID.map { .account($0) } ?? (state.preferences.showDemoAccounts ? .demo : .realAccounts)
-        return PriorityBriefingService().build(snapshot: state, scope: scope, actions: aiEnabled ? attentionItems : [], aiProviderLabel: aiEnabled ? briefingProviderLabel : nil)
+        return PriorityBriefingService().build(snapshot: state, scope: scope, actions: embeddedAIEnabled ? attentionItems : [], aiProviderLabel: embeddedAIEnabled ? briefingProviderLabel : nil,
+                                              includeTextRules: state.preferences.researchMode != .traditional && state.preferences.automationLevel != .manual)
     }
     func assistantAnswer(_ query: String) async throws -> MailAssistantResult {
+        research.record(.search)
+        if aiEnabled { research.record(.aiRequested) }
         let identity = aiRequestIdentity
         let messages = scopedMessages.filter { $0.folder != .trash }
         let service = MailIntelligenceService(provider: aiEnabled ? ai : nil)
@@ -563,6 +649,7 @@ final class AppModel {
         return result
     }
     private func searchIntelligence(_ query: String) async throws -> MailSearchResult {
+        research.record(.search)
         let identity = aiRequestIdentity
         let messages = scopedMessages.filter { $0.folder != .trash }
         let result = try await MailIntelligenceService(provider: aiEnabled ? ai : nil)

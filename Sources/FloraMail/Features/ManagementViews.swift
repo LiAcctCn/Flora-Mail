@@ -85,6 +85,7 @@ struct CategoriesView: View {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var showingAutomation = false
     var body: some View {
         Form {
             AccountsSettingsView()
@@ -109,11 +110,16 @@ struct SettingsView: View {
                 Text("Demo Mode needs no credentials. Real accounts use Keychain; synchronized mail stays available offline.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Human control") {
-                Text("Suggestions never send or move mail. Accept a classification or a writing preview to apply it. Automated rules are disabled in this milestone.").font(.callout)
+                Picker("Assistance level", selection: Binding(get: { model.state.preferences.automationLevel }, set: { model.setAutomationLevel($0) })) {
+                    ForEach(AutomationLevel.allCases) { level in Text("Level \(level.rawValue) · \(level.title)").tag(level) }
+                }
+                Text("Choosing a higher level does not authorize a rule. Level 3 requires an exact saved scope; Level 4 requires an expiring grant for one reviewed batch. Send and deletion are never automated.").font(.caption).foregroundStyle(.secondary)
+                Button("Automation Rules…") { showingAutomation = true }
                 LabeledContent("Mail Undo", value: "⌥⌘Z · Current session")
                 LabeledContent("Text editing Undo", value: "⌘Z · Composer")
                 Text("Demo changes use local Undo. Remote read/flag Undo executes an inverse at the provider; sends and moves do not have an Undo shortcut.").font(.caption).foregroundStyle(.secondary)
             }
+            ResearchSettingsView()
             Section("Local storage") {
                 Text(model.storageURL.path).font(.caption.monospaced()).textSelection(.enabled)
                 Text("Versioned JSON, written atomically through a repository. Messages, drafts, categories, AI results, preferences, rules, and activity persist across launches.").font(.caption).foregroundStyle(.secondary)
@@ -121,5 +127,6 @@ struct SettingsView: View {
                 Text("Clears generated results only. Your messages, drafts and accepted categories are kept.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding(12).frame(width: 650, height: 760)
+            .sheet(isPresented: $showingAutomation) { AutomationView().environment(model) }
     }
 }

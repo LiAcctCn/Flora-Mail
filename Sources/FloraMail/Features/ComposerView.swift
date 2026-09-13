@@ -142,6 +142,7 @@ struct ComposerView: View {
                 .accessibilityLabel("Message body")
                 .accessibilityIdentifier("composerBody")
             Divider()
+            if model.state.preferences.researchMode == .hybrid {
             writingTools
             if isRewriting {
                 Text(model.state.preferences.aiMode == .local ? "Generating a preview on this Mac. You can keep editing." : "Preparing a Demo AI preview. You can keep editing.")
@@ -169,6 +170,17 @@ struct ComposerView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20).padding(.bottom, 14)
+            }
+            }
+            if let acceptedRewrite, bodyText == acceptedRewrite.after {
+                HStack {
+                    Button("Undo Rewrite") {
+                        bodyText = acceptedRewrite.before
+                        self.acceptedRewrite = nil
+                        model.recordResearch(.undo)
+                    }.controlSize(.small)
+                    Spacer()
+                }.padding(.horizontal, 20).padding(.bottom, 12)
             }
             Divider()
             footer
@@ -273,13 +285,6 @@ struct ComposerView: View {
                 .controlSize(.small)
             }
             Spacer(minLength: 0)
-            if let acceptedRewrite, bodyText == acceptedRewrite.after {
-                Button("Undo Rewrite") {
-                    bodyText = acceptedRewrite.before
-                    self.acceptedRewrite = nil
-                }
-                .controlSize(.small)
-            }
             if !model.aiEnabled {
                 Text("AI is off").font(.caption).foregroundStyle(.secondary)
             }
@@ -309,13 +314,13 @@ struct ComposerView: View {
                     .accessibilityIdentifier("acceptRewrite")
                 Button("Insert Below") { acceptRewrite(preview, insert: true) }
                     .disabled(!canAccept(preview))
-                Button("Cancel") { rewritePreview = nil }
+                Button("Cancel") { rewritePreview = nil; model.recordResearch(.aiRejected) }
                 Spacer()
                 if bodyText != preview.source {
                     Text("Message changed. Generate a new preview.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("Review before applying.").font(.caption).foregroundStyle(.secondary)
+                    Text(model.canAcceptAISuggestions ? "Review before applying." : "Level 1 previews only. Change assistance level to accept.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -407,12 +412,13 @@ struct ComposerView: View {
         let replacement = insert ? bodyText + "\n\n" + preview.text : preview.text
         acceptedRewrite = AcceptedRewrite(before: bodyText, after: replacement)
         bodyText = replacement
+        model.recordResearch(.aiAccepted)
         rewritePreview = nil
         focusedField = .body
     }
 
     private func canAccept(_ preview: RewritePreview) -> Bool {
-        bodyText == preview.source && preview.providerIdentity == model.aiRequestIdentity
+        model.canAcceptAISuggestions && bodyText == preview.source && preview.providerIdentity == model.aiRequestIdentity
     }
 
     private func saveAndClose() {

@@ -69,9 +69,9 @@ final class ReadOnlySyncTests: XCTestCase {
             let mail = message(real)
             let draft = Draft(to: "friend@example.test", subject: "Reply", body: "Hello", replyToMessageID: mail.id, accountID: real.id)
             var snapshot = AppSnapshot(accounts: [real], messages: [mail], drafts: [draft])
-            let rule = AutomationRule(name: "Archive", senderEmail: mail.from.email, olderThanDays: 1, enabled: true, authorizedAt: timestamp.addingTimeInterval(-1))
+            let rule = AutomationRule(name: "Archive", senderEmail: mail.from.email, olderThanDays: 1, enabled: true, authorizedAt: timestamp.addingTimeInterval(-1), accountID: real.id, expiresAt: timestamp.addingTimeInterval(3_600))
             snapshot.rules = [rule]
-            let service = ActionExecutor(repository: MemoryMailRepository(), initialState: snapshot)
+            let service = ActionExecutor(repository: MemoryMailRepository(), initialState: snapshot, now: { self.timestamp })
             let actions: [ActionType] = [.archive(messageIDs: [mail.id]), .move(messageIDs: [mail.id], folder: .trash), .markRead(messageIDs: [mail.id], isRead: true), .flag(messageIDs: [mail.id], isFlagged: true), .sendDraft(id: draft.id)]
             for action in actions {
                 for origin in [ActionOrigin.user, .ai, .automation] {

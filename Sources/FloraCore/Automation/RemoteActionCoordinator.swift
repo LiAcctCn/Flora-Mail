@@ -16,10 +16,23 @@ public final class RemoteActionCoordinator {
 
     @discardableResult
     public func execute(_ proposal: RemoteMailProposal, confirmed: Bool = false, writer: any RemoteMailWriter, attachments: [OutgoingAttachment] = []) async throws -> RemoteActionRecord {
-        guard confirmed else { throw RemoteActionError.confirmationRequired }
+        try await executeApproved(proposal, confirmed: confirmed, writer: writer, attachments: attachments, automation: nil)
+    }
+
+    @discardableResult
+    public func executeAutomation(_ dispatch: AuthorizedAutomationDispatch, writer: any RemoteMailWriter) async throws -> RemoteActionRecord {
+        try AutomationPolicy.validateDispatch(dispatch, state: executor.state, now: Date())
+        let action = dispatch.action.remoteAction(messageID: dispatch.messageID)
+        let context = try validate(action, accountID: dispatch.accountID, origin: .automation, automation: dispatch)
+        let proposal = RemoteMailProposal(id: dispatch.id, accountID: dispatch.accountID, action: action, explanation: dispatch.explanation, origin: .automation, sourceFingerprint: try fingerprint(context))
+        return try await executeApproved(proposal, confirmed: false, writer: writer, attachments: [], automation: dispatch)
+    }
+
+    private func executeApproved(_ proposal: RemoteMailProposal, confirmed: Bool, writer: any RemoteMailWriter, attachments: [OutgoingAttachment], automation: AuthorizedAutomationDispatch?) async throws -> RemoteActionRecord {
+        guard confirmed || automation != nil else { throw RemoteActionError.confirmationRequired }
         guard writer.accountID == proposal.accountID else { throw RemoteActionError.invalidRequest }
         guard !executingAccounts.contains(proposal.accountID) else { throw RemoteActionError.alreadyExecuting }
-        let context = try validate(proposal.action, accountID: proposal.accountID, origin: proposal.origin)
+        let context = try validate(proposal.action, accountID: proposal.accountID, origin: proposal.origin, automation: automation)
         guard try fingerprint(context) == proposal.sourceFingerprint else { throw RemoteActionError.staleProposal }
         if let originalID = proposal.undoesRecordID {
             let (original, inverse) = try validateUndo(originalID)
@@ -96,8 +109,12 @@ public final class RemoteActionCoordinator {
         var messages: [MailMessage]
         var draft: Draft?
     }
-    private func validate(_ action: RemoteMailAction, accountID: UUID, origin: ActionOrigin) throws -> Context {
-        guard origin != .automation else { throw RemoteActionError.permissionDenied }
+    private func validate(_ action: RemoteMailAction, accountID: UUID, origin: ActionOrigin, automation: AuthorizedAutomationDispatch? = nil) throws -> Context {
+        if origin == .ai, executor.state.preferences.automationLevel < .suggestion || executor.state.preferences.researchMode == .traditional { throw MailActionError.assistanceDisabled }
+        if origin == .automation {
+            guard let automation, automation.accountID == accountID, action == automation.action.remoteAction(messageID: automation.messageID) else { throw RemoteActionError.permissionDenied }
+            try AutomationPolicy.validateDispatch(automation, state: executor.state, now: Date())
+        }
         guard let account = executor.state.accounts.first(where: { $0.id == accountID && $0.isRemote }) else { throw RemoteActionError.invalidRequest }
         guard account.writePermission == .userAuthorized, let granted = account.writeAuthorizedAt, granted <= Date() else { throw RemoteActionError.permissionDenied }
         guard account.credentialReference != nil, account.status != .disconnected, account.status != .reauthenticationRequired else { throw RemoteActionError.authenticationRequired }

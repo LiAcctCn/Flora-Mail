@@ -45,6 +45,7 @@ id_ed25519*
 # Runtime state may contain REAL MAIL even when the filename says "demo".
 # Fictional mail fixtures belong in reviewed source/tests, not runtime snapshots.
 composer-recovery.json*
+research-metrics.json*
 demo-store.json*
 mail-store.json*
 mail-cache*.json*

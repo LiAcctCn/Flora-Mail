@@ -273,8 +273,29 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     public var olderThanDays: Int
     public var enabled: Bool
     public var authorizedAt: Date?
-    public init(id: UUID = UUID(), name: String, senderEmail: String, olderThanDays: Int, enabled: Bool = false, authorizedAt: Date? = nil) {
+    public var accountID: UUID?
+    public var action: AutomationAction
+    public var maxMessages: Int
+    public var expiresAt: Date?
+    public var delegationOnly: Bool
+    public var revision: UUID
+    public init(id: UUID = UUID(), name: String, senderEmail: String, olderThanDays: Int, enabled: Bool = false, authorizedAt: Date? = nil, accountID: UUID? = nil, action: AutomationAction = .archive, maxMessages: Int = 20, expiresAt: Date? = nil, revision: UUID = UUID(), delegationOnly: Bool = false) {
         self.id = id; self.name = name; self.senderEmail = senderEmail; self.olderThanDays = olderThanDays; self.enabled = enabled; self.authorizedAt = authorizedAt
+        self.accountID = accountID; self.action = action; self.maxMessages = maxMessages; self.expiresAt = expiresAt; self.revision = revision; self.delegationOnly = delegationOnly
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, senderEmail, olderThanDays, enabled, authorizedAt, accountID, action, maxMessages, expiresAt, revision, delegationOnly }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id); name = try values.decode(String.self, forKey: .name)
+        senderEmail = try values.decode(String.self, forKey: .senderEmail); olderThanDays = try values.decode(Int.self, forKey: .olderThanDays)
+        accountID = try values.decodeIfPresent(UUID.self, forKey: .accountID); action = try values.decodeIfPresent(AutomationAction.self, forKey: .action) ?? .archive
+        maxMessages = try values.decodeIfPresent(Int.self, forKey: .maxMessages) ?? 20; expiresAt = try values.decodeIfPresent(Date.self, forKey: .expiresAt)
+        delegationOnly = try values.decodeIfPresent(Bool.self, forKey: .delegationOnly) ?? false
+        revision = try values.decodeIfPresent(UUID.self, forKey: .revision) ?? UUID()
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? false; authorizedAt = try values.decodeIfPresent(Date.self, forKey: .authorizedAt)
+        // Earlier rules had no account or expiration; their old consent cannot
+        // authorize a newly expanded, cross-account automation architecture.
+        if accountID == nil || expiresAt == nil { enabled = false; authorizedAt = nil }
     }
 }
 
@@ -296,13 +317,17 @@ public struct UserPreferences: Codable, Equatable, Sendable {
     public var showDemoAccounts: Bool
     public var mailSyncSettings: MailSyncSettings
     public var learnCategoryPreferences: Bool
-    public init(aiMode: AIMode = .mock, localAI: AIModelConfiguration = AIModelConfiguration(), showDemoAccounts: Bool = true, mailSyncSettings: MailSyncSettings = MailSyncSettings(), learnCategoryPreferences: Bool = false) {
+    public var automationLevel: AutomationLevel
+    public var researchMode: ResearchMode
+    public var researchMetricsEnabled: Bool
+    public init(aiMode: AIMode = .mock, localAI: AIModelConfiguration = AIModelConfiguration(), showDemoAccounts: Bool = true, mailSyncSettings: MailSyncSettings = MailSyncSettings(), learnCategoryPreferences: Bool = false, automationLevel: AutomationLevel = .suggestion, researchMode: ResearchMode = .hybrid, researchMetricsEnabled: Bool = false) {
         self.aiMode = aiMode; self.localAI = localAI
         self.showDemoAccounts = showDemoAccounts
         self.mailSyncSettings = mailSyncSettings
         self.learnCategoryPreferences = learnCategoryPreferences
+        self.automationLevel = automationLevel; self.researchMode = researchMode; self.researchMetricsEnabled = researchMetricsEnabled
     }
-    private enum CodingKeys: String, CodingKey { case aiMode, localAI, showDemoAccounts, mailSyncSettings, learnCategoryPreferences }
+    private enum CodingKeys: String, CodingKey { case aiMode, localAI, showDemoAccounts, mailSyncSettings, learnCategoryPreferences, automationLevel, researchMode, researchMetricsEnabled }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         aiMode = try values.decode(AIMode.self, forKey: .aiMode)
@@ -310,6 +335,9 @@ public struct UserPreferences: Codable, Equatable, Sendable {
         showDemoAccounts = try values.decodeIfPresent(Bool.self, forKey: .showDemoAccounts) ?? true
         mailSyncSettings = try values.decodeIfPresent(MailSyncSettings.self, forKey: .mailSyncSettings) ?? MailSyncSettings()
         learnCategoryPreferences = try values.decodeIfPresent(Bool.self, forKey: .learnCategoryPreferences) ?? false
+        automationLevel = try values.decodeIfPresent(AutomationLevel.self, forKey: .automationLevel) ?? .suggestion
+        researchMode = try values.decodeIfPresent(ResearchMode.self, forKey: .researchMode) ?? .hybrid
+        researchMetricsEnabled = try values.decodeIfPresent(Bool.self, forKey: .researchMetricsEnabled) ?? false
     }
 }
 
@@ -318,6 +346,8 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var accounts: [MailAccount]
     public var remoteFolders: [MailFolderDescriptor]
     public var remoteActionHistory: [RemoteActionRecord]
+    public var automationGrants: [AutomationGrant]
+    public var automationRuns: [AutomationRunRecord]
     public var messages: [MailMessage]
     public var categories: [MailCategory]
     public var drafts: [Draft]
@@ -326,13 +356,14 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var rules: [AutomationRule]
     public var history: [ExecutedAction]
     public var preferences: UserPreferences
-    public init(accounts: [MailAccount] = [], messages: [MailMessage] = [], categories: [MailCategory] = [], drafts: [Draft] = [], summaries: [MessageSummary] = [], classifications: [ClassificationSuggestion] = [], rules: [AutomationRule] = [], history: [ExecutedAction] = [], preferences: UserPreferences = UserPreferences(), remoteFolders: [MailFolderDescriptor] = [], remoteActionHistory: [RemoteActionRecord] = []) {
-        schemaVersion = 1; self.accounts = accounts; self.messages = messages; self.categories = categories; self.drafts = drafts
+    public init(accounts: [MailAccount] = [], messages: [MailMessage] = [], categories: [MailCategory] = [], drafts: [Draft] = [], summaries: [MessageSummary] = [], classifications: [ClassificationSuggestion] = [], rules: [AutomationRule] = [], history: [ExecutedAction] = [], preferences: UserPreferences = UserPreferences(), remoteFolders: [MailFolderDescriptor] = [], remoteActionHistory: [RemoteActionRecord] = [], automationGrants: [AutomationGrant] = [], automationRuns: [AutomationRunRecord] = []) {
+        schemaVersion = 2; self.accounts = accounts; self.messages = messages; self.categories = categories; self.drafts = drafts
         self.summaries = summaries; self.classifications = classifications; self.rules = rules; self.history = history; self.preferences = preferences
         self.remoteFolders = remoteFolders
         self.remoteActionHistory = remoteActionHistory
+        self.automationGrants = automationGrants; self.automationRuns = automationRuns
     }
-    private enum CodingKeys: String, CodingKey { case schemaVersion, accounts, messages, categories, drafts, summaries, classifications, rules, history, preferences, remoteFolders, remoteActionHistory }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, accounts, messages, categories, drafts, summaries, classifications, rules, history, preferences, remoteFolders, remoteActionHistory, automationGrants, automationRuns }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -343,5 +374,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         preferences = try values.decode(UserPreferences.self, forKey: .preferences)
         remoteFolders = try values.decodeIfPresent([MailFolderDescriptor].self, forKey: .remoteFolders) ?? []
         remoteActionHistory = try values.decodeIfPresent([RemoteActionRecord].self, forKey: .remoteActionHistory) ?? []
+        automationGrants = try values.decodeIfPresent([AutomationGrant].self, forKey: .automationGrants) ?? []
+        automationRuns = try values.decodeIfPresent([AutomationRunRecord].self, forKey: .automationRuns) ?? []
     }
 }

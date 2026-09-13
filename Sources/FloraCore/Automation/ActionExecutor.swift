@@ -17,9 +17,18 @@ public final class ActionExecutor {
     public init(repository: any MailRepository, initialState: AppSnapshot, now: @escaping () -> Date = Date.init) {
         self.repository = repository
         self.state = initialState
+        self.state.schemaVersion = 2
         self.now = now
         // History persists, but inverse operations are deliberately session-only.
         for index in state.history.indices { state.history[index].canUndo = false }
+        for index in state.rules.indices where state.rules[index].accountID == nil || state.rules[index].expiresAt == nil {
+            state.rules[index].enabled = false; state.rules[index].authorizedAt = nil
+        }
+        for index in state.automationRuns.indices where state.automationRuns[index].status == .running {
+            state.automationRuns[index].status = state.automationRuns[index].activeDispatchID == nil ? .cancelled : .outcomeUnknown
+            state.automationRuns[index].finishedAt = now()
+            state.automationRuns[index].errorMessage = "The previous run was interrupted. Its one-run authorization remains consumed; review action history before another run."
+        }
         for index in state.remoteActionHistory.indices where state.remoteActionHistory[index].status == .prepared {
             state.remoteActionHistory[index].status = .outcomeUnknown
             state.remoteActionHistory[index].errorMessage = "The previous action was interrupted. Check the account before retrying."
@@ -39,8 +48,12 @@ public final class ActionExecutor {
 
     @discardableResult
     public func execute(_ proposal: ProposedAction, confirmed: Bool = false, ruleID: UUID? = nil) throws -> ExecutedAction {
+        try executeValidated(proposal, confirmed: confirmed, ruleID: ruleID, automation: nil)
+    }
+
+    private func executeValidated(_ proposal: ProposedAction, confirmed: Bool, ruleID: UUID?, automation: AuthorizedAutomationDispatch?) throws -> ExecutedAction {
         let timestamp = now()
-        try ActionPermissionPolicy.validate(proposal, confirmed: confirmed, ruleID: ruleID, state: state, now: timestamp)
+        try ActionPermissionPolicy.validate(proposal, confirmed: confirmed, ruleID: ruleID, state: state, now: timestamp, automation: automation)
         let before = state
         var candidate = state
         switch proposal.type {
@@ -377,20 +390,39 @@ public final class ActionExecutor {
         state = candidate
     }
 
-    public func saveAutomationRule(_ rule: AutomationRule, confirmed: Bool = false) throws {
-        guard rule.olderThanDays >= 1, rule.olderThanDays <= 36_500,
-              (try? Self.recipientAddresses(rule.senderEmail))?.count == 1,
-              !rule.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MailActionError.invalidAutomation }
+    @discardableResult
+    public func saveAutomationRule(_ rule: AutomationRule, confirmed: Bool = false) throws -> AutomationRule {
+        try AutomationPolicy.validateScope(rule, state: state)
         var authorizedRule = rule
+        authorizedRule.senderEmail = rule.senderEmail.trimmingCharacters(in: .whitespaces).lowercased()
+        authorizedRule.name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        authorizedRule.revision = UUID()
         if rule.enabled {
             guard confirmed else { throw MailActionError.confirmationRequired }
+            guard state.preferences.automationLevel >= .rules else { throw AutomationError.levelNotAllowed }
+            guard let expiry = rule.expiresAt, expiry > now(), expiry <= now().addingTimeInterval(366 * 86_400) else { throw AutomationError.expired }
             authorizedRule.authorizedAt = now()
+            if state.preferences.automationLevel == .delegated { authorizedRule.delegationOnly = true }
         } else { authorizedRule.authorizedAt = nil }
         var candidate = state
-        candidate.rules.removeAll { $0.id == rule.id }
-        candidate.rules.append(authorizedRule)
-        try repository.save(candidate)
-        state = candidate
+        candidate.rules.removeAll { $0.id == rule.id }; candidate.rules.append(authorizedRule)
+        for index in candidate.automationGrants.indices where candidate.automationGrants[index].ruleID == rule.id { candidate.automationGrants[index].revokedAt = now() }
+        try repository.save(candidate); state = candidate
+        return authorizedRule
+    }
+
+    public func revokeAutomationRule(id: UUID) throws {
+        guard let index = state.rules.firstIndex(where: { $0.id == id }) else { throw AutomationError.ruleUnavailable }
+        var candidate = state
+        candidate.rules[index].enabled = false; candidate.rules[index].authorizedAt = nil; candidate.rules[index].revision = UUID()
+        for grantIndex in candidate.automationGrants.indices where candidate.automationGrants[grantIndex].ruleID == id { candidate.automationGrants[grantIndex].revokedAt = now() }
+        try repository.save(candidate); state = candidate
+    }
+    public func deleteAutomationRule(id: UUID) throws {
+        guard state.rules.contains(where: { $0.id == id }) else { throw AutomationError.ruleUnavailable }
+        var candidate = state; candidate.rules.removeAll { $0.id == id }
+        for index in candidate.automationGrants.indices where candidate.automationGrants[index].ruleID == id { candidate.automationGrants[index].revokedAt = now() }
+        try repository.save(candidate); state = candidate
     }
 
     private func updateMessages(_ ids: [UUID], in snapshot: inout AppSnapshot, change: (inout MailMessage) -> Void) throws {
@@ -602,5 +634,117 @@ extension ActionExecutor {
     private static func sameDraftContent(_ lhs: Draft, _ rhs: Draft?) -> Bool {
         guard let rhs else { return false }
         return lhs.accountID == rhs.accountID && lhs.replyToMessageID == rhs.replyToMessageID && lhs.to == rhs.to && lhs.cc == rhs.cc && lhs.bcc == rhs.bcc && lhs.subject == rhs.subject && lhs.body == rhs.body && lhs.attachments == rhs.attachments
+    }
+}
+
+extension ActionExecutor {
+    @discardableResult
+    public func executeAutomation(_ dispatch: AuthorizedAutomationDispatch) throws -> ExecutedAction {
+        try AutomationPolicy.validateDispatch(dispatch, state: state, now: now())
+        guard state.accounts.contains(where: { $0.id == dispatch.accountID && !$0.isRemote }) else { throw MailActionError.readOnlyAccount }
+        var proposal = ProposedAction(type: dispatch.action.localAction(messageID: dispatch.messageID), explanation: dispatch.explanation, origin: .automation)
+        proposal.id = dispatch.id
+        return try executeValidated(proposal, confirmed: false, ruleID: dispatch.ruleID, automation: dispatch)
+    }
+
+    func createAutomationDelegation(preview: AutomationPreview, expiresAt: Date) throws -> AutomationGrant {
+        let timestamp = now()
+        guard state.preferences.automationLevel == .delegated else { throw AutomationError.levelNotAllowed }
+        try AutomationPolicy.validatePreview(preview, state: state, now: timestamp)
+        guard let current = state.rules.first(where: { $0.id == preview.rule.id }), current == preview.rule else { throw AutomationError.stalePreview }
+        guard current.enabled, let authorized = current.authorizedAt, authorized <= timestamp else { throw AutomationError.ruleUnavailable }
+        guard !preview.messageIDs.isEmpty, preview.messageIDs.count <= 10 else { throw AutomationError.invalidScope }
+        guard let deadline = current.expiresAt, deadline > timestamp,
+              expiresAt > timestamp, expiresAt <= timestamp.addingTimeInterval(3_600), expiresAt <= deadline else { throw AutomationError.expired }
+        let grant = AutomationGrant(id: UUID(), ruleID: current.id, accountID: preview.accountID, messageIDs: preview.messageIDs, authorizedAt: timestamp, expiresAt: expiresAt,
+                                    consumedAt: nil, consumedByRunID: nil, revokedAt: nil, ruleFingerprint: try AutomationPolicy.ruleFingerprint(current), sourceFingerprint: preview.sourceFingerprint)
+        var candidate = state; candidate.automationGrants.append(grant)
+        try repository.save(candidate); state = candidate; return grant
+    }
+    func revokeAutomationDelegation(id: UUID) throws {
+        guard let index = state.automationGrants.firstIndex(where: { $0.id == id }) else { throw AutomationError.delegationConsumed }
+        var candidate = state; candidate.automationGrants[index].revokedAt = now()
+        try repository.save(candidate); state = candidate
+    }
+    func beginAutomationRun(preview: AutomationPreview, grantID: UUID?) throws -> AutomationRunRecord {
+        let timestamp = now()
+        try AutomationPolicy.validatePreview(preview, state: state, now: timestamp)
+        guard let rule = state.rules.first(where: { $0.id == preview.rule.id }), rule == preview.rule else { throw AutomationError.stalePreview }
+        guard !preview.messageIDs.isEmpty else { throw AutomationError.emptyMatch }
+        guard !state.automationRuns.contains(where: { $0.accountID == preview.accountID && $0.status == .running }) else { throw AutomationError.alreadyRunning }
+        let fingerprint = try AutomationPolicy.ruleFingerprint(rule), runID = UUID()
+        var candidate = state
+        if let grantID {
+            guard rule.enabled, let authorized = rule.authorizedAt, authorized <= timestamp else { throw AutomationError.ruleUnavailable }
+            guard let deadline = rule.expiresAt, deadline > timestamp else { throw AutomationError.expired }
+            guard state.preferences.automationLevel == .delegated else { throw AutomationError.levelNotAllowed }
+            guard let index = candidate.automationGrants.firstIndex(where: { $0.id == grantID }), candidate.automationGrants[index].consumedAt == nil,
+                  candidate.automationGrants[index].revokedAt == nil else { throw AutomationError.delegationConsumed }
+            let grant = candidate.automationGrants[index]
+            guard grant.ruleID == rule.id, grant.accountID == preview.accountID, grant.messageIDs == preview.messageIDs,
+                  grant.ruleFingerprint == fingerprint, grant.sourceFingerprint == preview.sourceFingerprint, grant.authorizedAt <= timestamp,
+                  !grant.messageIDs.isEmpty, grant.messageIDs.count <= 10, grant.expiresAt <= grant.authorizedAt.addingTimeInterval(3_600), grant.expiresAt <= deadline else { throw AutomationError.stalePreview }
+            guard grant.expiresAt > timestamp else { throw AutomationError.expired }
+            candidate.automationGrants[index].consumedAt = timestamp; candidate.automationGrants[index].consumedByRunID = runID
+        } else { try AutomationPolicy.validateReusableRule(rule, state: state, now: timestamp) }
+        let fingerprints = try Dictionary(uniqueKeysWithValues: preview.messageIDs.map { id in
+            guard let message = state.messages.first(where: { $0.id == id }) else { throw AutomationError.invalidScope }
+            return (id.uuidString, try AutomationPolicy.messageFingerprint(message))
+        })
+        let record = AutomationRunRecord(id: runID, ruleID: rule.id, ruleName: rule.name, grantID: grantID, accountID: preview.accountID, messageIDs: preview.messageIDs, startedAt: timestamp,
+                                         finishedAt: nil, status: .running, completedMessageIDs: [], actionIDs: [], errorMessage: nil, ruleFingerprint: fingerprint, messageFingerprints: fingerprints, activeDispatchID: nil, activeMessageID: nil)
+        candidate.automationRuns.append(record)
+        do { try repository.save(candidate) } catch { throw AutomationError.persistenceFailed }
+        state = candidate; return record
+    }
+    func prepareAutomationDispatch(runID: UUID, messageID: UUID) throws -> AuthorizedAutomationDispatch {
+        guard let index = state.automationRuns.firstIndex(where: { $0.id == runID }) else { throw AutomationError.ruleUnavailable }
+        let run = state.automationRuns[index], rule = try AutomationPolicy.validateRun(state.automationRuns[index], state: state, now: now())
+        guard run.activeDispatchID == nil, run.messageIDs.contains(messageID), !run.completedMessageIDs.contains(messageID),
+              let message = state.messages.first(where: { $0.id == messageID }), AutomationPolicy.matches(message, rule: rule, now: now()),
+              run.messageFingerprints[message.id.uuidString] == (try AutomationPolicy.messageFingerprint(message)) else { throw AutomationError.invalidScope }
+        let id = UUID()
+        let dispatch = AuthorizedAutomationDispatch(id: id, runID: runID, ruleID: rule.id, grantID: run.grantID, accountID: run.accountID, messageID: messageID, action: rule.action,
+                                                   explanation: "\(rule.action.title) using explicitly authorized \(run.grantID == nil ? "rule" : "one-run scope"): \(rule.name)")
+        var candidate = state; candidate.automationRuns[index].activeDispatchID = id; candidate.automationRuns[index].activeMessageID = messageID
+        try repository.save(candidate); state = candidate
+        return dispatch
+    }
+    func completeAutomationDispatch(_ dispatch: AuthorizedAutomationDispatch, receipt: AutomationDispatchReceipt) throws {
+        guard let index = state.automationRuns.firstIndex(where: { $0.id == dispatch.runID && $0.status == .running && $0.activeDispatchID == dispatch.id }),
+              let account = state.accounts.first(where: { $0.id == dispatch.accountID }), account.isRemote == receipt.isRemote else { throw AutomationError.invalidReceipt }
+        if receipt.isRemote {
+            guard let action = state.remoteActionHistory.first(where: { $0.id == receipt.actionID }), action.id == dispatch.id, action.status == .completed,
+                  action.proposal.accountID == dispatch.accountID, action.proposal.origin == .automation,
+                  action.proposal.action == dispatch.action.remoteAction(messageID: dispatch.messageID) else { throw AutomationError.invalidReceipt }
+        } else {
+            guard let action = state.history.first(where: { $0.id == receipt.actionID }), action.proposal.id == dispatch.id,
+                  action.proposal.origin == .automation, action.proposal.type == dispatch.action.localAction(messageID: dispatch.messageID) else { throw AutomationError.invalidReceipt }
+        }
+        var candidate = state
+        candidate.automationRuns[index].completedMessageIDs.append(dispatch.messageID); candidate.automationRuns[index].actionIDs.append(receipt.actionID)
+        candidate.automationRuns[index].activeDispatchID = nil; candidate.automationRuns[index].activeMessageID = nil
+        try repository.save(candidate); state = candidate
+    }
+    func finishAutomationRun(_ id: UUID) throws -> AutomationRunRecord {
+        guard let index = state.automationRuns.firstIndex(where: { $0.id == id && $0.status == .running }),
+              state.automationRuns[index].completedMessageIDs.count == state.automationRuns[index].messageIDs.count else { throw AutomationError.invalidReceipt }
+        var candidate = state; candidate.automationRuns[index].status = .completed; candidate.automationRuns[index].finishedAt = now()
+        try repository.save(candidate); state = candidate; return candidate.automationRuns[index]
+    }
+    func failAutomationRun(_ id: UUID, error: any Error) throws {
+        guard let index = state.automationRuns.firstIndex(where: { $0.id == id }) else { throw AutomationError.ruleUnavailable }
+        let activeID = state.automationRuns[index].activeDispatchID
+        let uncertain = state.remoteActionHistory.contains { $0.id == activeID && ($0.status == .outcomeUnknown || $0.status == .prepared) }
+            || error as? RemoteActionError == .outcomeUnknown || error as? AutomationError == .invalidReceipt
+        var candidate = state
+        candidate.automationRuns[index].status = uncertain ? .outcomeUnknown : (error is CancellationError ? .cancelled : .failed)
+        candidate.automationRuns[index].finishedAt = now()
+        if error is CancellationError { candidate.automationRuns[index].errorMessage = "Run cancelled. Completed actions remain recorded; a one-run grant cannot be reused." }
+        else if let error = error as? AutomationError { candidate.automationRuns[index].errorMessage = error.localizedDescription }
+        else if let error = error as? RemoteActionError { candidate.automationRuns[index].errorMessage = error.localizedDescription }
+        else { candidate.automationRuns[index].errorMessage = "The run stopped safely. Review its completed actions before trying again." }
+        candidate.automationRuns[index].activeDispatchID = nil; candidate.automationRuns[index].activeMessageID = nil
+        try repository.save(candidate); state = candidate
     }
 }
