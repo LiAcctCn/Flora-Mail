@@ -1,0 +1,5 @@
+{
+  "googleDesktopClientID": "YOUR_DESKTOP_CLIENT_ID.apps.googleusercontent.com",
+  "microsoftPublicClientID": "YOUR_MICROSOFT_APPLICATION_CLIENT_ID",
+  "notes": "Reference only. Enter public application IDs in Flora Mail > Settings > Accounts. No client secret is used. Never put tokens or app-specific passwords in this file."
+}

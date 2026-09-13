@@ -1,0 +1,95 @@
+# Swift, Xcode and packaged build output
+.build/
+.swiftpm/
+build/
+DerivedData/
+*.app/
+*.xcarchive/
+*.xcresult/
+*.dSYM/
+xcuserdata/
+*.xcuserstate
+
+# Machine-specific files
+.DS_Store
+
+# Credentials and private configuration (examples contain placeholders only)
+.env
+.env.*
+!.env.example
+Config/*.local.*
+Config/*credentials*.json
+Config/*secret*.json
+Config/*token*.json
+credentials.json
+credentials.*.json
+client_secret*.json
+secrets.json
+secrets.*.json
+token.json
+tokens.json
+oauth-tokens*.json
+access-token*
+refresh-token*
+app-specific-password*
+app-password*
+*.key
+*.pem
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+id_rsa*
+id_ed25519*
+
+# Runtime state may contain REAL MAIL even when the filename says "demo".
+# Fictional mail fixtures belong in reviewed source/tests, not runtime snapshots.
+demo-store.json*
+mail-store.json*
+mail-cache*.json*
+mailbox*.json*
+messages.json*
+accounts.json*
+preferences.json*
+summaries.json*
+classifications.json*
+mail.json*
+Attachments/
+MailData/
+LocalData/
+Application Support/
+*.eml
+*.mbox
+*.mbox/
+*.msg
+*.sqlite*
+*.db
+*.db-*
+*.store
+*.store-*
+*.realm*
+
+# Local inference outputs, model weights and caches
+ai-cache.json*
+AICache/
+Cache/
+Caches/
+.cache/
+.ollama/
+models/
+*.gguf
+*.ggml
+*.safetensors
+*.mlmodelc/
+*.mlpackage/
+
+# Logs, diagnostics and editor recovery files
+*.log
+logs/
+Logs/
+*.trace
+*.profraw
+*.profdata
+*.swp
+*.swo
+*~

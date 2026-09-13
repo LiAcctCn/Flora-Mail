@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Flora Mail - Beta}",
+            "name": "Debug FloraMail",
+            "target": "FloraMail",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug FloraMail"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Flora Mail - Beta}",
+            "name": "Release FloraMail",
+            "target": "FloraMail",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release FloraMail"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Flora Mail - Beta}",
+            "name": "Debug FloraLocalAICheck",
+            "target": "FloraLocalAICheck",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug FloraLocalAICheck"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Flora Mail - Beta}",
+            "name": "Release FloraLocalAICheck",
+            "target": "FloraLocalAICheck",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release FloraLocalAICheck"
+        }
+    ]
+}
