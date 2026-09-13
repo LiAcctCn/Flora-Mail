@@ -19,14 +19,14 @@ public final class DemoMailProvider: MailProvider {
     public let name = "Demo Mail · Local only"
     private let executor: ActionExecutor
     public init(executor: ActionExecutor) { self.executor = executor }
-    public func fetchAccounts() async throws -> [MailAccount] { executor.state.accounts.filter { !$0.isReadOnly } }
+    public func fetchAccounts() async throws -> [MailAccount] { executor.state.accounts.filter { !$0.isRemote } }
     public func fetchFolders() async throws -> [MailFolder] { MailFolder.allCases }
     public func fetchMessages(folder: MailFolder? = nil) async throws -> [MailMessage] {
-        let demoAccountIDs = Set(executor.state.accounts.filter { !$0.isReadOnly }.map(\.id))
+        let demoAccountIDs = Set(executor.state.accounts.filter { !$0.isRemote }.map(\.id))
         return executor.state.messages.filter { demoAccountIDs.contains($0.accountID) && (folder == nil || $0.folder == folder) }.sorted { $0.date > $1.date }
     }
     public func fetchThread(id: UUID) async throws -> MailThread {
-        let demoAccountIDs = Set(executor.state.accounts.filter { !$0.isReadOnly }.map(\.id))
+        let demoAccountIDs = Set(executor.state.accounts.filter { !$0.isRemote }.map(\.id))
         let messages = executor.state.messages.filter { demoAccountIDs.contains($0.accountID) && $0.threadID == id }.sorted { $0.date < $1.date }
         guard !messages.isEmpty else { throw MailActionError.messageNotFound }
         return MailThread(id: id, messages: messages)

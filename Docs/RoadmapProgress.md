@@ -21,3 +21,13 @@ The actual Ollama 0.34.0 / `gemma3:4b` integration passed the fictional synchron
 Phase gate: Release build succeeded; **205 tests passed, zero failed** (65 XCTest + 140 Swift Testing), with both `FLORA_TEST_LOOPBACK=1` and `FLORA_TEST_WEBKIT=1`. Review found no credential signatures in the project files. Live provider authentication remains unverified.
 
 Primary rendering references: [content JavaScript control](https://developer.apple.com/documentation/webkit/wkwebpagepreferences/allowscontentjavascript), [nonpersistent data stores](https://developer.apple.com/documentation/webkit/wkwebsitedatastore), [content rules](https://developer.apple.com/documentation/webkit/wkcontentruleliststore).
+
+## Phase 2 — real mail actions
+
+Implemented explicitly enabled Gmail, Microsoft and iCloud writers behind the shared action coordinator. Read/unread, flag, archive, supported folder moves, server drafts and send require a reviewable proposal and user confirmation. OAuth read-only grants remain the default; Google and Microsoft upgrades require consent. iCloud uses validated TLS IMAP and SMTP STARTTLS, with credentials confined to Keychain.
+
+The coordinator durably journals attempts before network dispatch, binds proposals to current account/message/draft state, validates acknowledgements and blocks retries after ambiguous outcomes. Read/flag Undo issues a real inverse provider operation. Sent messages have no pretend Undo. An acknowledged send remains completed even if targeted iCloud draft cleanup fails, with a visible advisory. SMTP success does not trigger a speculative second Sent-folder upload.
+
+The composer now supports Reply All, Cc/Bcc, controlled attachment imports, local draft recovery, separate server-draft synchronization and confirmed real sending. Attachment bytes are bound to previews by SHA-256; cross-account paths, substitution and size violations fail closed. Recovery cannot overwrite private state when the main store is unreadable. Attachments are currently limited to 2 MiB each and 8 MiB total for consistent provider handling.
+
+Phase gate: Release app built successfully; **284 tests passed, zero failed** (86 XCTest + 198 Swift Testing). This included the real native SMTP transport against trusted and untrusted TLS loopback fixtures, plus OAuth loopback and WebKit checks. Review found no secret signatures in project files. Credential-backed Gmail, Microsoft and iCloud writes remain **UNVERIFIED**. The Mac was locked during the new composer UI verification, so that manual check remains pending.

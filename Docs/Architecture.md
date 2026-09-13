@@ -23,7 +23,7 @@ Tools/LocalAICheck/          Opt-in real inference using fictional fixtures
 
 The SwiftUI application is the composition root. `AppModel` owns the repository-backed `ActionExecutor` and selected AI provider, exposes committed snapshots, and coordinates async assistance. Views keep presentation state; they do not access files or provider APIs. The account controller coordinates browser authentication, provider-independent sync, and requested attachment downloads. Remote mail clients use TLS to the selected provider; the separate LocalModelClient only performs on-device inference over loopback. No cloud AI provider or third-party Swift dependency is included.
 
-`MailProvider` retains account/folder/message/thread reads and its existing proposed-action gateway. `DemoMailProvider` wraps only demo-account records in the same executor used by the app, avoiding duplicate mutable stores. Real adapters conform to `ReadOnlyMailProvider`; their action gateway rejects every mutation. Provider JSON/MIME/IMAP types terminate at the mapping layer. The synchronized local repository remains the GUI’s source of truth, including while offline.
+`MailProvider` retains account/folder/message/thread reads and its existing proposed-action gateway. `DemoMailProvider` wraps only demo-account records in the same executor used by the app, avoiding duplicate mutable stores. Real adapters conform to `ReadOnlyMailProvider`; their legacy action gateway rejects every mutation. The separate `RemoteMailWriter` accepts only an authorized capability constructed by `RemoteActionCoordinator` after policy validation and durable journal commit. Provider JSON/MIME/IMAP types terminate at the mapping layer. The synchronized local repository remains the GUI’s source of truth, including while offline.
 
 ## Account and sync flow
 
@@ -67,9 +67,9 @@ AI providers receive values only, with no executor, repository, mail mutation or
 
 This is an application architecture boundary, not a sandbox against malicious in-process Swift code. A future model tool layer must construct AI-origin proposals in trusted application code, never permit model output to supply a trusted user origin, and retain the same executor boundary.
 
-Category predictions and confirmed assignments are separate fields. Prediction caching never overwrites a confirmed category. Deleting a category removes assignments and associated predictions; classification receives only the remaining categories. No server label operation exists in the prototype; classification is a local Flora assignment even for synchronized mail. Changes to an existing category invalidate the classification cache context and future prompts receive the current categories. No training or adaptive preference learning is implemented.
+Category predictions and confirmed assignments are separate fields. Prediction caching never overwrites a confirmed category. Deleting a category removes assignments and associated predictions; classification receives only the remaining categories. Classification is a local Flora assignment even for synchronized mail; it does not invoke provider folder/label changes. Changes to an existing category invalidate the classification cache context and future prompts receive the current categories. No training or adaptive preference learning is implemented.
 
-Real accounts remain read-only in both provider contracts and `ActionPermissionPolicy`. Sending, archive, trash, move, flag, read/unread and demo automation are rejected for real-account records even with user confirmation. Opening a real message does not mutate its read state. Reply/forward/smart-reply controls populate normal local drafts, whose real-account identity also blocks Demo Send. Category edits, accepted local classifications, draft saves, and generated caches remain permitted local operations.
+Real accounts start read-only and keep provider identity separate from granted OAuth access and locally authorized write permission. The Demo executor still rejects all real mail effects, even after opt-in. `RemoteActionCoordinator` separately validates account/source/destination, binds an immutable preview to a source fingerprint, requires confirmation, and persists a prepared journal before handing a capability to the writer. It validates acknowledgements before changing cached state. Opening mail does not mutate read status. Reply/Reply All/forward/smart replies populate normal account-scoped drafts; local save never implies remote sync or send.
 
 ## Persistence and rollback
 
@@ -79,7 +79,7 @@ The executor constructs a candidate snapshot, validates it, then saves it before
 
 Undo tracks affected records and preserves unrelated summaries/preferences generated after a mail action. Removing a sent demo message also removes its summary and classification records from the mail store; separate capability cache entries remain until eviction or explicit cache clearing. Undoing category deletion restores the earlier category and confirmed assignments and prevents later predictions from competing with those assignments. The in-memory inverse stack is intentionally session-only; the durable activity log records that a past action was undone.
 
-Sync imports do not create mail Undo operations: they mirror provider state. Confirmed local category changes retain normal Undo. No real external sending is implemented; the reversible local Sent insertion remains restricted to Demo accounts.
+Sync imports do not create mail Undo operations: they mirror provider state. Confirmed local category changes retain normal Undo. Remote send is not reversible. Prepared or uncertain submissions block duplicate sends across restart, including stale draft saves and deleting/recreating the same ID. Activity can record an explicit user-verified outcome. Remote read/flag Undo is a new checked, confirmed provider operation; archive/move Undo is not offered. The reversible local Sent insertion remains restricted to Demo accounts.
 
 ## Async AI behavior
 
@@ -93,7 +93,7 @@ AIPromptLibrary owns versioned prompts and supported structural schemas. AIRespo
 
 CachedAIProvider decorates any provider and uses a separate local cache repository. Keys hash capability, prompt version, runtime/model digest, endpoint namespace and message ID/subject/body/sender; classification also includes all category IDs/names. Source state such as read/flag/folder does not invalidate unchanged content. A model identity change during inference is rejected before caching. Cancellation and fresh app request identities prevent obsolete results from being published even when the mode changes away and back. Invalid cache files fail visibly and can be cleared from Settings.
 
-Cache writes and connections stay outside SwiftUI. Classification persistence is independent of summary persistence so a summary parsing failure cannot prevent a valid classification. Draft previews are never written to the capability cache. Only Save Draft or a confirmed demo send persists draft text. Optional writing context is limited to the selected reply source, with account identity checked in AppModel. Real mail is processed through the same normalized AIProvider interface; network authentication and provider-specific objects never enter AI prompts. See [Local AI details](LocalAI.md) for exact context and known limits.
+Cache writes and connections stay outside SwiftUI. Classification persistence is independent of summary persistence so a summary parsing failure cannot prevent a valid classification. Draft previews are never written to the capability cache. Explicit Save Draft persists a normal draft; a separate debounced, bounded, access-restricted recovery file protects unsaved edits. A new launch offers the recovery copy without silently overwriting the saved version. Optional writing context is limited to the selected reply source, with account identity checked in AppModel. Real mail is processed through the same normalized AIProvider interface; network authentication and provider-specific objects never enter AI prompts. See [Local AI details](LocalAI.md) for exact context and known limits.
 
 ## Automation scope
 
@@ -107,7 +107,7 @@ Mail bodies are decoded into inert text. Gmail multipart payloads and iCloud MIM
 
 Attachment metadata is separate from payloads. Requested content is limited to 20 MiB for REST providers; IMAP requires encoded payloads below 25 MiB, and the shared local store enforces a 25 MiB ceiling. Downloads are written under controlled application storage using account/message/attachment identities, with sanitized filenames and relative-path validation. Download state persists only after the file is successfully saved. Demo attachment metadata has no remote payload. Sensitive mail/cache JSON is local and access-restricted, but the prototype does not provide an encrypted high-volume database.
 
-The REST transport allows only fixed official HTTPS hosts, rejects redirects, and avoids disk URL caches/cookies. Authorized mail requests are GET-only; OAuth token exchange/refresh are separately scoped POST operations. IMAP uses TLS, EXAMINE and PEEK reads, with no SMTP or write command path. Controlled errors exclude response bodies and secrets. Fake transports test these boundaries; actual provider login, live mailbox behavior and live-message AI require separate credential-backed verification.
+The REST transport allows only fixed official HTTPS hosts, rejects redirects, and avoids disk URL caches/cookies. Read-only mail transport remains GET-only. A separate constrained write transport allows reviewed method/path combinations, including draft attachments but no permanent message-delete endpoint. IMAP EXAMINE/PEEK reads remain separate from capability-gated UID operations and TLS-upgraded SMTP. Controlled errors exclude response bodies and secrets. Fake transports test these boundaries; actual provider login, live mailbox behavior and live-message AI require separate credential-backed verification.
 
 ## Further work
 
@@ -115,5 +115,11 @@ The REST transport allows only fixed official HTTPS hosts, rejects redirects, an
 2. Broaden MIME/encoding and model-quality fixture coverage, including long conversations and attachment edge cases.
 3. Replace whole-file persistence when mailbox scale warrants indexed storage and incremental updates; add a local embedding index only with explicit account scope.
 4. Expand safe HTML compatibility fixtures without introducing active content or remote tracking.
-5. Consider real provider mutations only in a separately authorized phase, preserving preview, permission checks and accurate action history.
+5. Validate real provider mutations with controlled accounts, preserving preview, permission checks and accurate action history.
 6. Add explicit research configuration and privacy-minimized evaluation instrumentation only after defining the study.
+
+## Outgoing mail safety
+
+`DraftAttachment` stores a controlled relative path, size, MIME type and SHA-256 hash. File import copies bytes under the account/draft namespace. Both storage and the core MIME composer verify content hashes before dispatch; changing equal-length bytes after preview cannot change the authorized payload. The MIME composer validates headers/addresses, folds and encodes values, bounds bodies/attachments and separates SMTP envelope Bcc recipients from transmitted headers. Provider-specific code never enters SwiftUI.
+
+Accounts serialize writes with synchronization. Acknowledgement loss, partial writes and post-dispatch cancellation record uncertain outcomes, not success. The app does not automatically replay these operations. Read/flag inverses require matching cached acknowledged state and travel through the same permission/confirmation/writer path. They cannot reverse a send or guarantee that another client has not independently changed server state.

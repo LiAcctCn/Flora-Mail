@@ -1,12 +1,16 @@
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import FloraCore
+import CryptoKit
 
 /// Attachment bytes are fetched only on an explicit Download command. Paths in
 /// mail metadata are relative, so provider filenames cannot escape this store.
 actor AttachmentStorage {
     let root: URL
     static let maximumBytes = 25 * 1_024 * 1_024
+    static let maximumOutgoingBytes = 2 * 1_024 * 1_024
+    static let maximumOutgoingTotalBytes = 8 * 1_024 * 1_024
 
     init(root: URL) { self.root = root }
 
@@ -30,6 +34,37 @@ actor AttachmentStorage {
         let url = try location(relative)
         guard FileManager.default.fileExists(atPath: url.path) else { throw AttachmentStorageError.missing }
         return url
+    }
+
+    func importForDraft(_ source: URL, accountID: UUID, draftID: UUID) throws -> DraftAttachment {
+        let access = source.startAccessingSecurityScopedResource()
+        defer { if access { source.stopAccessingSecurityScopedResource() } }
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentTypeKey])
+        guard values.isRegularFile == true, let size = values.fileSize, size <= Self.maximumOutgoingBytes else { throw AttachmentStorageError.outgoingTooLarge }
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: Self.maximumOutgoingBytes + 1) ?? Data()
+        guard data.count <= Self.maximumOutgoingBytes else { throw AttachmentStorageError.outgoingTooLarge }
+        let id = UUID(), name = source.lastPathComponent
+        let path = try save(data, accountID: accountID, messageID: draftID, attachmentID: id, fileName: name)
+        return DraftAttachment(id: id, name: name, mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream", size: data.count, localRelativePath: path,
+                               contentHash: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+    }
+
+    func outgoingPayloads(for draft: Draft) throws -> [OutgoingAttachment] {
+        guard let accountID = draft.accountID, draft.attachments.count <= 10,
+              draft.attachments.reduce(0, { $0 + max(0, $1.size) }) <= Self.maximumOutgoingTotalBytes else { throw AttachmentStorageError.outgoingTooLarge }
+        return try draft.attachments.map { attachment in
+            let prefix = "\(accountID.uuidString)/\(draft.id.uuidString)/\(attachment.id.uuidString)"
+            guard attachment.localRelativePath == prefix || attachment.localRelativePath.hasPrefix(prefix + ".") else { throw AttachmentStorageError.invalidPath }
+            let file = try existingFile(attachment.localRelativePath)
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            let data = try handle.read(upToCount: Self.maximumOutgoingBytes + 1) ?? Data()
+            guard data.count <= Self.maximumOutgoingBytes, data.count == attachment.size else { throw AttachmentStorageError.outgoingTooLarge }
+            guard attachment.contentHash == SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() else { throw AttachmentStorageError.changed }
+            return OutgoingAttachment(id: attachment.id, name: attachment.name, mimeType: attachment.mimeType, data: data)
+        }
     }
 
     func imagePreview(_ relative: String) throws -> Data {
@@ -59,9 +94,11 @@ actor AttachmentStorage {
 }
 
 enum AttachmentStorageError: LocalizedError {
-    case tooLarge, missing, invalidPath, unsupportedImage
+    case tooLarge, outgoingTooLarge, missing, invalidPath, unsupportedImage, changed
     var errorDescription: String? {
         switch self {
+        case .changed: "This attachment changed or predates attachment verification. Remove it and attach the intended file again before sending."
+        case .outgoingTooLarge: "Composer attachments are limited to 2 MiB each and 8 MiB total. The file may also have changed since it was attached."
         case .unsupportedImage: "This image cannot be safely previewed. You can inspect the downloaded file in Finder."
         case .tooLarge: "This attachment exceeds the local 25 MiB storage limit. The selected provider may impose a smaller download limit."
         case .missing: "The downloaded file is no longer available. Download it again."

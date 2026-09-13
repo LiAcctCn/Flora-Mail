@@ -21,7 +21,7 @@ struct TodayView: View {
                         Text("A clearer view of your day.").font(.title3).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Label(model.state.preferences.showDemoAccounts ? "Demo mailbox" : "Cached mail · Read-only", systemImage: "internaldrive").font(.caption).foregroundStyle(.secondary)
+                    Label(model.state.preferences.showDemoAccounts ? "Demo mailbox" : "Cached mail", systemImage: "internaldrive").font(.caption).foregroundStyle(.secondary)
                         .padding(.horizontal, 12).padding(.vertical, 7).background(.quaternary.opacity(0.5), in: Capsule())
                 }
                 if !model.state.accounts.contains(where: { $0.providerType != .demo }) {

@@ -35,7 +35,7 @@ public final class MailSyncCoordinator {
 
     public func sync(provider: any ReadOnlyMailProvider, settings: MailSyncSettings = MailSyncSettings(), onProgress: @MainActor (SyncProgress) -> Void = { _ in }) async throws -> SyncResult {
         let accountID = provider.accountID
-        guard let account = executor.state.accounts.first(where: { $0.id == accountID && $0.isReadOnly }) else { throw MailSyncError.accountNotFound }
+        guard let account = executor.state.accounts.first(where: { $0.id == accountID && $0.isRemote }) else { throw MailSyncError.accountNotFound }
         guard account.status != .disconnected else { throw MailSyncError.disconnected }
         guard !activeAccounts.contains(accountID) else { throw MailSyncError.alreadySyncing }
         activeAccounts.insert(accountID)

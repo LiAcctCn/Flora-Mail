@@ -5,23 +5,27 @@ import Foundation
 public final class GmailMailProvider: ReadOnlyMailProvider {
     public let name = "Gmail · Read only"
     public let accountID: UUID
-    private let reference: MailCredentialReference
-    private let configuration: OAuthClientConfiguration
+    let reference: MailCredentialReference
+    let configuration: OAuthClientConfiguration
     private let reader: AuthorizedMailReader
+    let writer: AuthorizedMailWriteTransport
     private var threadIDs: [UUID: String] = [:]
     public init(accountID: UUID, credentialReference: MailCredentialReference, configuration: OAuthClientConfiguration,
                 credentials: any CredentialStore = KeychainCredentialStore(), http: any MailHTTPClient = SecureMailHTTPClient()) {
         self.accountID = accountID; reference = credentialReference; self.configuration = configuration
-        reader = AuthorizedMailReader(tokens: OAuthAccessTokenProvider(configuration: configuration, reference: credentialReference, credentials: credentials, http: http), http: http, host: "gmail.googleapis.com")
+        let tokens = OAuthAccessTokenProvider(configuration: configuration, reference: credentialReference, credentials: credentials, http: http)
+        writer = AuthorizedMailWriteTransport(configuration: configuration, tokens: tokens, http: http)
+        reader = AuthorizedMailReader(tokens: tokens, http: http, host: "gmail.googleapis.com")
     }
     private func get(_ path: [String], query: [URLQueryItem] = []) async throws -> Data {
         guard configuration.provider == .gmail else { throw RemoteMailError.invalidConfiguration }
         return try await reader.get(MailHTTP.url(host: "gmail.googleapis.com", path: ["gmail", "v1", "users", "me"] + path, query: query))
     }
+    func readForWrite(_ path: [String], query: [URLQueryItem] = []) async throws -> Data { try await get(path, query: query) }
     public func fetchAccounts() async throws -> [MailAccount] {
         let profile = try MailHTTP.decode(GmailProfile.self, await get(["profile"]))
         guard profile.emailAddress.contains("@") else { throw RemoteMailError.malformedResponse }
-        return [MailAccount(id: accountID, name: "Gmail", address: MailAddress(name: profile.emailAddress, email: profile.emailAddress), provider: "Gmail", providerType: .gmail, providerAccountID: profile.emailAddress.lowercased(), credentialReference: reference, status: .connected, oauthClientID: configuration.clientID)]
+        return [MailAccount(id: accountID, name: "Gmail", address: MailAddress(name: profile.emailAddress, email: profile.emailAddress), provider: "Gmail", providerType: .gmail, providerAccountID: profile.emailAddress.lowercased(), credentialReference: reference, status: .connected, oauthClientID: configuration.clientID, oauthAccessLevel: configuration.accessLevel)]
     }
     public func fetchRemoteFolders() async throws -> [MailFolderDescriptor] {
         let labels = try MailHTTP.decode(GmailLabels.self, await get(["labels"]))
@@ -283,6 +287,6 @@ enum GmailMapping {
                            to: MIMEParser.addresses(headers["to"] ?? ""), subject: headers["subject"] ?? "(No subject)", body: body,
                            date: wire.internalDate.flatMap(Double.init).map { Date(timeIntervalSince1970: $0 / 1000) } ?? MIMEParser.date(headers["date"]) ?? Date(timeIntervalSince1970: 0),
                            folder: role(labels: labels) ?? .archive, isRead: !labels.contains("UNREAD"), isFlagged: labels.contains("STARRED"), attachments: attachments,
-                           providerThreadID: wire.threadId, providerFolderIDs: labels, htmlBody: originalHTML, cc: MIMEParser.addresses(headers["cc"] ?? ""), isImportant: labels.contains("IMPORTANT"), contentWarnings: warnings)
+                           providerThreadID: wire.threadId, providerFolderIDs: labels, htmlBody: originalHTML, cc: MIMEParser.addresses(headers["cc"] ?? ""), isImportant: labels.contains("IMPORTANT"), contentWarnings: warnings, replyTo: MIMEParser.addresses(headers["reply-to"] ?? ""), internetMessageID: headers["message-id"], references: RESTMailContent.messageReferences(headers["references"]))
     }
 }

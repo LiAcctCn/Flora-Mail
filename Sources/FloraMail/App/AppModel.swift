@@ -20,6 +20,10 @@ final class AppModel {
     private(set) var editorDraft: Draft?
     private(set) var editorIsDirty = false
     private(set) var editorRecoveryError: String?
+    private(set) var recoverableDraft: Draft?
+    private let recoveryStore: DraftRecoveryStore
+    private let persistentStorageAvailable: Bool
+    private var recoveryTask: Task<Void, Never>?
     private var editorIsPresented = false
     private var pendingEditorRestoration: Draft?
     private var editorRestorationID = UUID()
@@ -29,6 +33,7 @@ final class AppModel {
         didSet { statusOffersUndo = false }
     }
     private(set) var statusOffersUndo = false
+    var pendingRemoteAction: RemoteMailProposal?
     var showingAccountConnection = false
     var showingHistory = false
     var showingCategories = false
@@ -59,6 +64,7 @@ final class AppModel {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         let resolvedURL = storageURL ?? support.appendingPathComponent("FloraMail/demo-store.json")
         self.storageURL = resolvedURL
+        recoveryStore = DraftRecoveryStore(url: resolvedURL.deletingLastPathComponent().appendingPathComponent("composer-recovery.json"))
         let repository = JSONMailRepository(url: resolvedURL)
         var storageFailed = false
         do {
@@ -74,6 +80,7 @@ final class AppModel {
             executor = ActionExecutor(repository: MemoryMailRepository(), initialState: initial)
             storageWarning = "Local storage could not be opened. This session uses temporary demo data; the original file is preserved. \(error.localizedDescription)"
         }
+        persistentStorageAvailable = !storageFailed
         accountController = AccountController(executor: executor, storageURL: resolvedURL, storageAvailable: !storageFailed,
                                               credentials: credentials, providerOverride: remoteProviderFactory)
         state = executor.state
@@ -81,6 +88,13 @@ final class AppModel {
             cacheStore = JSONAICacheStore(url: resolvedURL.deletingLastPathComponent().appendingPathComponent("ai-cache.json"))
         }
         configureProviders()
+        if !storageFailed {
+            do {
+                if let recovery = try recoveryStore.load(), let id = recovery.accountID, state.accounts.contains(where: { $0.id == id }) {
+                    recoverableDraft = recovery
+                }
+            } catch { editorRecoveryError = "The unsaved-draft recovery file could not be read. Existing saved drafts are preserved." }
+        }
         accountController.onChange = { [weak self] in self?.refresh() }
         accountController.onConnected = { [weak self] id in
             self?.setDemoMode(false)
@@ -110,11 +124,14 @@ final class AppModel {
             return isDemo == state.preferences.showDemoAccounts
         }
     }
-    func isReadOnly(_ message: MailMessage) -> Bool { state.accounts.first { $0.id == message.accountID }?.isReadOnly ?? true }
+    func isReadOnly(_ message: MailMessage) -> Bool {
+        guard let account = state.accounts.first(where: { $0.id == message.accountID }) else { return true }
+        return account.isReadOnly || (account.isRemote && (account.credentialReference == nil || account.status == .disconnected || account.status == .reauthenticationRequired || accountController.writingAccounts.contains(account.id) || accountController.isSyncing(account.id) || accountController.connecting))
+    }
     func canSendDemo(_ draft: Draft) -> Bool {
-        if let accountID = draft.accountID, state.accounts.first(where: { $0.id == accountID })?.isReadOnly != false { return false }
+        if let accountID = draft.accountID, state.accounts.first(where: { $0.id == accountID })?.providerType != .demo { return false }
         if let id = draft.replyToMessageID {
-            guard let source = state.messages.first(where: { $0.id == id }), !isReadOnly(source) else { return false }
+            guard let source = state.messages.first(where: { $0.id == id }), state.accounts.first(where: { $0.id == source.accountID })?.providerType == .demo else { return false }
         }
         return draft.accountID != nil || state.preferences.showDemoAccounts
     }
@@ -176,20 +193,55 @@ final class AppModel {
     }
     func draftHasUnsavedChanges(_ draft: Draft) -> Bool {
         guard let saved = state.drafts.first(where: { $0.id == draft.id }) else {
-            return !draft.to.isEmpty || !draft.subject.isEmpty || !draft.body.isEmpty || draft.replyToMessageID != nil
+            return !draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.attachments.isEmpty || !draft.subject.isEmpty || !draft.body.isEmpty || draft.replyToMessageID != nil
         }
-        return draft.to != saved.to || draft.subject != saved.subject || draft.body != saved.body
+        return draft.to != saved.to || draft.cc != saved.cc || draft.bcc != saved.bcc || draft.attachments != saved.attachments || draft.accountID != saved.accountID || draft.subject != saved.subject || draft.body != saved.body
             || draft.replyToMessageID != saved.replyToMessageID
     }
     func updateEditorDraft(_ draft: Draft, isDirty: Bool) {
         editorDraft = draft; editorIsDirty = isDirty; editorIsPresented = true
         if pendingEditorRestoration?.id == draft.id { pendingEditorRestoration = nil }
+        recoveryTask?.cancel()
+        guard persistentStorageAvailable else {
+            editorRecoveryError = "This temporary session cannot save draft recovery. Restore local storage before relying on saved edits."
+            return
+        }
+        guard isDirty else {
+            do { try recoveryStore.clear(draftID: draft.id) }
+            catch { editorRecoveryError = "The previous recovery copy could not be cleared." }
+            return
+        }
+        recoveryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+                guard let self, self.editorDraft?.id == draft.id else { return }
+                try self.recoveryStore.save(draft)
+                self.editorRecoveryError = nil
+            } catch is CancellationError {} catch {
+                self?.editorRecoveryError = "Automatic draft recovery could not be saved. Use Save Draft before closing."
+            }
+        }
     }
     func clearEditorDraft(id: UUID) {
         guard editorDraft?.id == id else { return }
         editorIsPresented = false
         if pendingEditorRestoration != nil { scheduleEditorRestoration() }
-        else { editorDraft = nil; editorIsDirty = false; editorRecoveryError = nil }
+        else {
+            recoveryTask?.cancel()
+            do { if persistentStorageAvailable { try recoveryStore.clear(draftID: id) }; recoverableDraft = nil }
+            catch { editorRecoveryError = "The old recovery copy could not be cleared. Review it on the next launch." }
+            editorDraft = nil; editorIsDirty = false
+        }
+    }
+    func recoverUnsavedDraft() {
+        guard let draft = recoverableDraft, composingDraft == nil else { return }
+        if let account = state.accounts.first(where: { $0.id == draft.accountID }) { setDemoMode(!account.isRemote) }
+        composingDraft = draft; recoverableDraft = nil
+    }
+    func discardRecoveredDraft() {
+        guard let draft = recoverableDraft else { return }
+        do { try recoveryStore.clear(draftID: draft.id); recoverableDraft = nil }
+        catch { report(error) }
     }
     func restoreEditorAfterCancelledTermination(_ draft: Draft, recoveryError: String? = nil) {
         // SwiftUI may dismiss an allowed sheet before the delegate vetoes Quit.
@@ -215,6 +267,10 @@ final class AppModel {
 
     @discardableResult func perform(_ action: ProposedAction, confirmed: Bool = false) -> Bool {
         do {
+            if let remote = try remoteProposal(for: action) {
+                pendingRemoteAction = remote
+                return false // Execution and selection changes wait for confirmation.
+            }
             let executed = try executor.execute(action, confirmed: confirmed)
             refresh()
             statusMessage = action.explanation
@@ -265,13 +321,17 @@ final class AppModel {
             return true
         } catch { report(error); return false }
     }
-    func compose(replyTo message: MailMessage? = nil, forward: Bool = false, suggestedText: String? = nil) {
+    func compose(replyTo message: MailMessage? = nil, forward: Bool = false, replyAll: Bool = false, suggestedText: String? = nil) {
         guard composingDraft == nil, pendingEditorRestoration == nil else { return }
         if let message {
             let prefix = forward ? "Fwd: " : "Re: "
             let subject = message.subject.lowercased().hasPrefix(prefix.lowercased()) ? message.subject : prefix + message.subject
             let body = forward ? "\n\n—— Forwarded message ——\nFrom: \(message.from.name) <\(message.from.email)>\nSubject: \(message.subject)\n\n\(message.body)" : suggestedText ?? "Hi \(message.from.name.components(separatedBy: " ").first ?? message.from.name),\n\n"
-            composingDraft = Draft(to: forward ? "" : message.from.email, subject: subject, body: body, replyToMessageID: forward ? nil : message.id, accountID: message.accountID)
+            guard let account = state.accounts.first(where: { $0.id == message.accountID }) else { return }
+            let recipients = DraftComposition.recipients(for: message, account: account, replyAll: replyAll)
+            var draft = Draft(to: forward ? "" : recipients.to, subject: subject, body: body, replyToMessageID: forward ? nil : message.id, accountID: message.accountID)
+            draft.cc = forward ? "" : recipients.cc
+            composingDraft = draft
         } else {
             guard let accountID = accountScopeID ?? displayedAccounts.first?.id else { return }
             composingDraft = Draft(accountID: accountID)
@@ -285,6 +345,64 @@ final class AppModel {
         guard canSendDemo(draft) else { report(MailActionError.readOnlyAccount); return false }
         guard saveDraft(draft) else { return false }
         return perform(ProposedAction(type: .sendDraft(id: draft.id), explanation: "Sent “\(draft.subject)” in the demo. No email left this Mac."), confirmed: true)
+    }
+
+    func canSend(_ draft: Draft) -> Bool {
+        if canSendDemo(draft) { return true }
+        guard let accountID = draft.accountID,
+              let account = state.accounts.first(where: { $0.id == accountID }), !account.isReadOnly,
+              account.credentialReference != nil, account.status != .disconnected, account.status != .reauthenticationRequired,
+              !accountController.writingAccounts.contains(accountID) else { return false }
+        return (state.drafts.first(where: { $0.id == draft.id }) ?? draft).deliveryState == .notSent
+    }
+
+    func prepareRemoteDraft(_ draft: Draft, send: Bool) throws -> RemoteMailProposal {
+        guard let accountID = draft.accountID else { throw MailActionError.accountNotFound }
+        guard saveDraft(draft) else { throw AccountActionError.draftSaveFailed }
+        return try accountController.propose(send ? .sendDraft(draftID: draft.id) : .syncDraft(draftID: draft.id), accountID: accountID,
+            explanation: send ? "Send “\(draft.subject)” from this account." : "Synchronize draft “\(draft.subject)” to this account.")
+    }
+
+    /// Called only by the explicit confirmation surface. Failures remain in the
+    /// active sheet and the durable remote action log, never a success toast.
+    func executeRemote(_ proposal: RemoteMailProposal) async -> String? {
+        do {
+            _ = try await accountController.execute(proposal)
+            refresh(); statusMessage = "Mail service confirmed the action. View Activity for details."
+            return nil
+        } catch {
+            refresh()
+            return error.localizedDescription
+        }
+    }
+
+    func previewMove(_ message: MailMessage, to folder: MailFolderDescriptor) {
+        do {
+            pendingRemoteAction = try accountController.propose(.move(messageIDs: [message.id], destination: folder), accountID: message.accountID,
+                explanation: "Move “\(message.subject)” to \(folder.name).")
+        } catch { report(error) }
+    }
+
+    private func remoteProposal(for proposal: ProposedAction) throws -> RemoteMailProposal? {
+        let ids: [UUID]
+        switch proposal.type {
+        case .archive(let value), .move(let value, _), .markRead(let value, _), .flag(let value, _): ids = value
+        default: return nil
+        }
+        guard let first = ids.first, let source = state.messages.first(where: { $0.id == first }),
+              let account = state.accounts.first(where: { $0.id == source.accountID }), account.isRemote else { return nil }
+        guard ids.allSatisfy({ id in state.messages.contains(where: { $0.id == id && $0.accountID == account.id }) }) else { throw MailSyncError.accountMismatch }
+        let action: RemoteMailAction
+        switch proposal.type {
+        case .archive: action = .archive(messageIDs: ids)
+        case .markRead(_, let value): action = .markRead(messageIDs: ids, isRead: value)
+        case .flag(_, let value): action = .flag(messageIDs: ids, isFlagged: value)
+        case .move(_, let role):
+            guard let folder = state.remoteFolders.first(where: { $0.accountID == account.id && $0.role == role }) else { throw AccountActionError.folderUnavailable }
+            action = .move(messageIDs: ids, destination: folder)
+        default: return nil
+        }
+        return try accountController.propose(action, accountID: account.id, explanation: proposal.explanation, origin: proposal.origin)
     }
     private func configureProviders() {
         mockAI = CachedAIProvider(provider: MockAIProvider(), store: cacheStore, promptVersion: "mock-v2", namespace: "demo")

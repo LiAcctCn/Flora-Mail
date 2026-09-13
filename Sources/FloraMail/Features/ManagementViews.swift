@@ -7,10 +7,17 @@ struct ActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("Activity").font(.title2.weight(.semibold)); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
-            Text("A record of what actually changed. Undo is available for this session’s reversible actions, most recent first.").font(.callout).foregroundStyle(.secondary)
-            if model.state.history.isEmpty { EmptyMailView(title: "No changes yet", message: "Accepted suggestions and mail actions will appear here.", icon: "clock.arrow.circlepath") }
+            Text("Mail service operations and local changes are recorded separately. Remote read/flag changes offer a confirmed inverse when still valid; sends cannot be undone.").font(.callout).foregroundStyle(.secondary)
+            if model.state.history.isEmpty && model.state.remoteActionHistory.isEmpty { EmptyMailView(title: "No changes yet", message: "Accepted suggestions and mail actions will appear here.", icon: "clock.arrow.circlepath") }
             else {
-                List(model.state.history.reversed()) { entry in
+                List {
+                    if !model.state.remoteActionHistory.isEmpty {
+                        Section("Mail service actions") {
+                            ForEach(model.state.remoteActionHistory.reversed()) { record in RemoteActivityRow(record: record) }
+                        }
+                    }
+                    Section("Local actions") {
+                    ForEach(model.state.history.reversed()) { entry in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: entry.undone ? "arrow.uturn.backward.circle" : "checkmark.circle").foregroundStyle(entry.undone ? Color.secondary : .floraAccent)
                         VStack(alignment: .leading, spacing: 6) {
@@ -18,9 +25,11 @@ struct ActivityView: View {
                             Text("\(entry.proposal.origin.rawValue.capitalized) · \(entry.undone ? "Undone" : "Executed locally") · \(entry.date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 7)
+                    }
+                    }
                 }.listStyle(.inset)
             }
-            HStack { Spacer(); Button("Undo Last Mail Action") { model.undo() }.disabled(!model.canUndo) }
+            HStack { Spacer(); Button("Undo Last Local Action") { model.undo() }.disabled(!model.canUndo) }
         }.padding(24).frame(width: 630, height: 520)
     }
 }
@@ -88,16 +97,16 @@ struct SettingsView: View {
             }
             LocalAISettingsView()
             Section("Privacy & accounts") {
-                LabeledContent("Mail access", value: model.state.preferences.showDemoAccounts ? "Demo Mode" : "Real accounts · Read only")
+                LabeledContent("Mail access", value: model.state.preferences.showDemoAccounts ? "Demo Mode" : "Real accounts · Per-account permission")
                 LabeledContent("AI connection", value: "Loopback only · No cloud fallback")
-                LabeledContent("Sending", value: "Local demo only")
+                LabeledContent("Sending", value: "Preview and explicit confirmation")
                 Text("Demo Mode needs no credentials. Real accounts use Keychain; synchronized mail stays available offline.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Human control") {
                 Text("Suggestions never send or move mail. Accept a classification or a writing preview to apply it. Automated rules are disabled in this milestone.").font(.callout)
                 LabeledContent("Mail Undo", value: "⌥⌘Z · Current session")
                 LabeledContent("Text editing Undo", value: "⌘Z · Composer")
-                Text("Demo mailbox changes are reversible. All server-side mail actions are disabled for real accounts.").font(.caption).foregroundStyle(.secondary)
+                Text("Demo changes use local Undo. Remote read/flag Undo executes an inverse at the provider; sends and moves do not have an Undo shortcut.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Local storage") {
                 Text(model.storageURL.path).font(.caption.monospaced()).textSelection(.enabled)

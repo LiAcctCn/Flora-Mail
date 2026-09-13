@@ -43,6 +43,7 @@ struct ReaderView: View {
     }
 
     private var isReadOnly: Bool { model.isReadOnly(currentMessage) }
+    private var isRemote: Bool { account?.isRemote == true }
 
     private var canDownloadAttachments: Bool {
         account?.credentialReference != nil && account?.status != .disconnected && account?.status != .reauthenticationRequired
@@ -79,17 +80,20 @@ struct ReaderView: View {
                         }
                     }
                 }
-                if threadMessages.count > 1 || isReadOnly { threadSection }
+                if threadMessages.count > 1 || isRemote { threadSection }
                 Divider()
                 HStack(spacing: 12) {
                     Button { model.compose(replyTo: currentMessage) } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
+                    Button { model.compose(replyTo: currentMessage, replyAll: true) } label: {
+                        Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+                    }
                     Button { model.compose(replyTo: currentMessage, forward: true) } label: {
                         Label("Forward", systemImage: "arrowshape.turn.up.right")
                     }
                     Spacer()
-                    Text(isReadOnly ? "Cached on this Mac · Mailbox is read-only" : "Demo mailbox · Stored on this Mac")
+                    Text(isRemote ? "Cached on this Mac · Mail actions require confirmation" : "Demo mailbox · Stored on this Mac")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -120,10 +124,10 @@ struct ReaderView: View {
     private var messageHeader: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Label(account?.address.email ?? "Account unavailable", systemImage: isReadOnly ? "envelope" : "tray")
+                Label(account?.address.email ?? "Account unavailable", systemImage: isRemote ? "envelope" : "tray")
                     .lineLimit(1).textSelection(.enabled)
                 Spacer(minLength: 8)
-                Label(isReadOnly ? "Read-only account" : "Demo account", systemImage: isReadOnly ? "lock" : "externaldrive")
+                Label(isRemote ? (isReadOnly ? "Read-only account" : "Connected account") : "Demo account", systemImage: isRemote ? "envelope" : "externaldrive")
             }
             .font(.caption).foregroundStyle(.secondary)
             .accessibilityIdentifier("readerAccountIdentity")
@@ -182,13 +186,23 @@ struct ReaderView: View {
                         perform(.move(messageIDs: [message.id], folder: .inbox), explanation: "Moved “\(currentMessage.subject)” to Inbox.")
                     }
                     .disabled(currentMessage.folder == .inbox)
+                    if isRemote {
+                        Menu("Move to Folder") {
+                            ForEach(model.state.remoteFolders.filter { folder in
+                                folder.accountID == currentMessage.accountID &&
+                                !(account?.providerType == .gmail && (folder.role == .sent || folder.role == .drafts))
+                            }) { folder in
+                                Button(folder.name) { model.previewMove(currentMessage, to: folder) }
+                            }
+                        }
+                    }
                 } label: {
                     Label("Message Actions", systemImage: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(isReadOnly)
-                .help(isReadOnly ? "Server mail changes are disabled for real accounts. Local categories remain available." : "Change this demo message")
+                .help(isReadOnly ? "Enable mailbox actions in Accounts settings. Local categories remain available." : "Preview a message action")
             }
         }
     }
@@ -384,7 +398,7 @@ struct ReaderView: View {
             ForEach(currentMessage.attachments) { attachment in
                 attachmentRow(attachment)
             }
-            if !isReadOnly {
+            if !isRemote {
                 Text("Demo attachment metadata; files are not included.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
@@ -414,13 +428,13 @@ struct ReaderView: View {
                     Text(attachment.name).font(.callout).textSelection(.enabled)
                     Text(attachment.mimeType + " · " + ByteCountFormatter.string(fromByteCount: Int64(attachment.size), countStyle: .file) + (attachment.isInline ? " · Inline" : ""))
                         .font(.caption).foregroundStyle(.secondary)
-                    if isReadOnly {
+                    if isRemote {
                         Text(downloading ? "Downloading…" : downloaded ? "Downloaded on this Mac" : "Not downloaded")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 8)
-                if isReadOnly {
+                if isRemote {
                     if downloading {
                         ProgressView().controlSize(.small)
                         Button("Cancel") { model.accountController.cancelDownload(attachment.id) }
@@ -515,9 +529,9 @@ struct ReaderView: View {
     }
 
     private var threadSection: some View {
-        DisclosureGroup("\(isReadOnly ? "Cached conversation" : "Conversation") · \(threadMessages.count) messages") {
+        DisclosureGroup("\(isRemote ? "Cached conversation" : "Conversation") · \(threadMessages.count) messages") {
             VStack(alignment: .leading, spacing: 8) {
-                if isReadOnly {
+                if isRemote {
                     HStack {
                         if model.accountController.loadingThreads.contains(currentMessage.id) {
                             ProgressView().controlSize(.small)

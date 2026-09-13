@@ -33,7 +33,7 @@ public enum MailActionError: LocalizedError, Equatable {
         case .outsideAutomationScope: "The proposed action falls outside this rule’s sender, age, or Inbox scope."
         case .noUndo: "There is no action to undo in this session."
         case .emptySelection: "Select at least one message."
-        case .readOnlyAccount: "Real accounts are read-only in this version. Mailbox changes and sending are available only in Demo Mode."
+        case .readOnlyAccount: "Review a real account action and authorize mailbox changes in Accounts settings."
         }
     }
 }
@@ -47,16 +47,16 @@ public enum ActionPermissionPolicy {
         case .archive(let ids), .move(let ids, _), .markRead(let ids, _), .flag(let ids, _):
             for id in ids {
                 guard let message = state.messages.first(where: { $0.id == id }) else { throw MailActionError.messageNotFound }
-                guard state.accounts.contains(where: { $0.id == message.accountID && !$0.isReadOnly }) else { throw MailActionError.readOnlyAccount }
+                guard state.accounts.contains(where: { $0.id == message.accountID && !$0.isRemote }) else { throw MailActionError.readOnlyAccount }
             }
         case .sendDraft(let id):
             guard let draft = state.drafts.first(where: { $0.id == id }) else { throw MailActionError.draftNotFound }
             if let accountID = draft.accountID {
-                guard state.accounts.contains(where: { $0.id == accountID && !$0.isReadOnly }) else { throw MailActionError.readOnlyAccount }
+                guard state.accounts.contains(where: { $0.id == accountID && !$0.isRemote }) else { throw MailActionError.readOnlyAccount }
             }
             if let replyID = draft.replyToMessageID {
                 guard let message = state.messages.first(where: { $0.id == replyID }),
-                      state.accounts.contains(where: { $0.id == message.accountID && !$0.isReadOnly }) else { throw MailActionError.readOnlyAccount }
+                      state.accounts.contains(where: { $0.id == message.accountID && !$0.isRemote }) else { throw MailActionError.readOnlyAccount }
             }
         default: break // Categories, classification and saved drafts are local annotations.
         }

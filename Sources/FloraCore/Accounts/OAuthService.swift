@@ -6,7 +6,17 @@ import Security
 public struct OAuthClientConfiguration: Codable, Equatable, Sendable {
     public let provider: MailProviderType
     public let clientID: String
-    public init(provider: MailProviderType, clientID: String) { self.provider = provider; self.clientID = clientID }
+    public let accessLevel: OAuthAccessLevel
+    public init(provider: MailProviderType, clientID: String, accessLevel: OAuthAccessLevel = .readOnly) {
+        self.provider = provider; self.clientID = clientID; self.accessLevel = accessLevel
+    }
+    private enum CodingKeys: String, CodingKey { case provider, clientID, accessLevel }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decode(MailProviderType.self, forKey: .provider)
+        clientID = try values.decode(String.self, forKey: .clientID)
+        accessLevel = try values.decodeIfPresent(OAuthAccessLevel.self, forKey: .accessLevel) ?? .readOnly
+    }
     public func validated() throws -> OAuthClientConfiguration {
         guard provider == .gmail || provider == .microsoft, !clientID.isEmpty, clientID.count < 256,
               !clientID.contains(where: { $0.isWhitespace || $0.isNewline }) else { throw RemoteMailError.invalidConfiguration }
@@ -16,7 +26,11 @@ public struct OAuthClientConfiguration: Codable, Equatable, Sendable {
         return self
     }
     public var scopes: [String] {
-        provider == .gmail ? ["https://www.googleapis.com/auth/gmail.readonly"] : ["https://graph.microsoft.com/Mail.Read", "https://graph.microsoft.com/User.Read", "offline_access"]
+        if provider == .gmail {
+            return [accessLevel == .readWrite ? "https://www.googleapis.com/auth/gmail.modify" : "https://www.googleapis.com/auth/gmail.readonly"]
+        }
+        let mail = accessLevel == .readWrite ? ["https://graph.microsoft.com/Mail.ReadWrite", "https://graph.microsoft.com/Mail.Send"] : ["https://graph.microsoft.com/Mail.Read"]
+        return mail + ["https://graph.microsoft.com/User.Read", "offline_access"]
     }
     var tokenURL: URL {
         // Fixed compile-time URLs are isolated here; invalid public configuration is rejected before use.
@@ -148,11 +162,14 @@ private enum OAuthTokenExchange {
     static func validateScope(_ scope: String, configuration: OAuthClientConfiguration) throws {
         let scopes = Set(scope.split(separator: " ").map { $0.lowercased().replacingOccurrences(of: "https://graph.microsoft.com/", with: "") })
         if configuration.provider == .gmail {
-            guard scopes.contains("https://www.googleapis.com/auth/gmail.readonly"),
-                  scopes.isSubset(of: ["https://www.googleapis.com/auth/gmail.readonly"]) else { throw RemoteMailError.authorizationDenied }
+            let read = "https://www.googleapis.com/auth/gmail.readonly", write = "https://www.googleapis.com/auth/gmail.modify"
+            let required = configuration.accessLevel == .readWrite ? write : read
+            let allowed: Set<String> = configuration.accessLevel == .readWrite ? [read, write] : [read]
+            guard scopes.contains(required), scopes.isSubset(of: allowed) else { throw RemoteMailError.authorizationDenied }
         } else {
-            guard scopes.contains("mail.read"), scopes.contains("user.read"),
-                  scopes.isSubset(of: ["mail.read", "user.read", "offline_access", "openid", "profile", "email"]) else { throw RemoteMailError.authorizationDenied }
+            let required: Set<String> = configuration.accessLevel == .readWrite ? ["mail.readwrite", "mail.send", "user.read"] : ["mail.read", "user.read"]
+            let allowed = required.union(["offline_access", "openid", "profile", "email"]).union(configuration.accessLevel == .readWrite ? ["mail.read"] : [])
+            guard required.isSubset(of: scopes), scopes.isSubset(of: allowed) else { throw RemoteMailError.authorizationDenied }
         }
     }
 }

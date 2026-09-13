@@ -28,7 +28,7 @@ public final class MailThreadService {
     public func load(message: MailMessage, provider: any ReadOnlyMailProvider) async throws -> MailThread {
         try Task.checkCancellation()
         guard provider.accountID == message.accountID else { throw MailSyncError.accountMismatch }
-        guard let account = executor.state.accounts.first(where: { $0.id == message.accountID && $0.isReadOnly }) else { throw MailSyncError.accountNotFound }
+        guard let account = executor.state.accounts.first(where: { $0.id == message.accountID && $0.isRemote }) else { throw MailSyncError.accountNotFound }
         guard account.status != .disconnected else { throw MailSyncError.disconnected }
         guard sourceStillAvailable(message) else { throw MailThreadError.sourceUnavailable }
         guard let providerThreadID = message.providerThreadID, !providerThreadID.isEmpty else { throw MailThreadError.unavailable }

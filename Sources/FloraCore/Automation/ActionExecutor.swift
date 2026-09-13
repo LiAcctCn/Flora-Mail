@@ -20,6 +20,15 @@ public final class ActionExecutor {
         self.now = now
         // History persists, but inverse operations are deliberately session-only.
         for index in state.history.indices { state.history[index].canUndo = false }
+        for index in state.remoteActionHistory.indices where state.remoteActionHistory[index].status == .prepared {
+            state.remoteActionHistory[index].status = .outcomeUnknown
+            state.remoteActionHistory[index].errorMessage = "The previous action was interrupted. Check the account before retrying."
+            let action = state.remoteActionHistory[index].proposal.action
+            if let id = action.draftID, let draftIndex = state.drafts.firstIndex(where: { $0.id == id }) {
+                if action.isSend { state.drafts[draftIndex].deliveryState = .outcomeUnknown }
+                else { state.drafts[draftIndex].draftSyncStatus = .outcomeUnknown }
+            }
+        }
         for index in state.accounts.indices where state.accounts[index].status == .syncing {
             state.accounts[index].status = state.accounts[index].credentialReference == nil ? .disconnected : .connected
             state.accounts[index].syncState.errorMessage = "The previous sync was interrupted. Cached mail remains available."
@@ -70,24 +79,42 @@ public final class ActionExecutor {
             candidate.classifications.removeAll { $0.categoryID == id }
         case .saveDraft(var draft):
             draft.updatedAt = timestamp
-            if let index = candidate.drafts.firstIndex(where: { $0.id == draft.id }) { candidate.drafts[index] = draft }
-            else { candidate.drafts.append(draft) }
+            if let index = candidate.drafts.firstIndex(where: { $0.id == draft.id }) {
+                let old = candidate.drafts[index]
+                // An editor owns text, never remote identity or delivery authority.
+                guard draft.accountID == old.accountID else { throw MailActionError.readOnlyAccount }
+                draft.providerDraftID = old.providerDraftID; draft.providerDraftMessageID = old.providerDraftMessageID
+                draft.deliveryState = old.deliveryState
+                draft.draftSyncStatus = old.draftSyncStatus == .outcomeUnknown ? .outcomeUnknown : (Self.sameDraftContent(draft, old) ? old.draftSyncStatus : .localOnly)
+                candidate.drafts[index] = draft
+            } else {
+                draft.providerDraftID = nil; draft.providerDraftMessageID = nil
+                draft.deliveryState = .notSent; draft.draftSyncStatus = .localOnly
+                candidate.drafts.append(draft)
+            }
         case .deleteDraft(let id):
             guard candidate.drafts.contains(where: { $0.id == id }) else { throw MailActionError.draftNotFound }
             candidate.drafts.removeAll { $0.id == id }
         case .sendDraft(let id):
             guard let draft = candidate.drafts.first(where: { $0.id == id }) else { throw MailActionError.draftNotFound }
-            let recipients = try Self.recipientAddresses(draft.to)
+            let recipients: [MailAddress], copied: [MailAddress], blindCopied: [MailAddress]
+            do {
+                recipients = try OutgoingMIMEComposer.addresses(draft.to)
+                copied = try OutgoingMIMEComposer.addresses(draft.cc)
+                blindCopied = try OutgoingMIMEComposer.addresses(draft.bcc)
+                guard !(recipients + copied + blindCopied).isEmpty, (recipients + copied + blindCopied).count <= 100 else { throw MailActionError.invalidRecipient }
+            } catch { throw MailActionError.invalidRecipient }
             guard !draft.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MailActionError.emptySubject }
             let reply = candidate.messages.first { $0.id == draft.replyToMessageID }
             let sendingAccount: MailAccount?
-            if let accountID = draft.accountID { sendingAccount = candidate.accounts.first { $0.id == accountID && !$0.isReadOnly } }
-            else if let reply { sendingAccount = candidate.accounts.first { $0.id == reply.accountID && !$0.isReadOnly } }
-            else { sendingAccount = candidate.accounts.first { !$0.isReadOnly } }
+            if let accountID = draft.accountID { sendingAccount = candidate.accounts.first { $0.id == accountID && !$0.isRemote } }
+            else if let reply { sendingAccount = candidate.accounts.first { $0.id == reply.accountID && !$0.isRemote } }
+            else { sendingAccount = candidate.accounts.first { !$0.isRemote } }
             guard let account = sendingAccount else { throw MailActionError.accountNotFound }
             // Demo delivery is only a local Sent record. There is no networking.
             candidate.messages.append(MailMessage(accountID: account.id, threadID: reply?.threadID ?? UUID(), from: account.address,
-                                                 to: recipients, subject: draft.subject, body: draft.body, date: timestamp, folder: .sent, isRead: true))
+                                                 to: recipients, subject: draft.subject, body: draft.body, date: timestamp, folder: .sent, isRead: true,
+                                                 attachments: draft.attachments.map { MailAttachment(id: $0.id, name: $0.name, size: $0.size, mimeType: $0.mimeType) }, cc: copied))
             candidate.drafts.removeAll { $0.id == id }
         }
         var recordedProposal = proposal
@@ -117,7 +144,15 @@ public final class ActionExecutor {
         var candidate = state
         restoreMessageChanges(before: record.before.messages, after: record.after.messages, current: &candidate.messages)
         restoreChanges(before: record.before.categories, after: record.after.categories, current: &candidate.categories)
+        let authoritativeDrafts = Dictionary(candidate.drafts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         restoreChanges(before: record.before.drafts, after: record.after.drafts, current: &candidate.drafts)
+        for index in candidate.drafts.indices {
+            guard let latest = authoritativeDrafts[candidate.drafts[index].id] else { continue }
+            candidate.drafts[index].providerDraftID = latest.providerDraftID
+            candidate.drafts[index].providerDraftMessageID = latest.providerDraftMessageID
+            candidate.drafts[index].deliveryState = latest.deliveryState
+            candidate.drafts[index].draftSyncStatus = latest.draftSyncStatus == .outcomeUnknown ? .outcomeUnknown : (Self.sameDraftContent(candidate.drafts[index], latest) ? latest.draftSyncStatus : .localOnly)
+        }
         // Keep AI work produced after unrelated actions. Restore only predictions
         // affected by classification/category mutations, grouped by source message.
         let changedPredictions = Set((record.before.classifications + record.after.classifications).filter {
@@ -194,7 +229,7 @@ public final class ActionExecutor {
     /// Incoming pages are deduplicated by account + provider ID. Server flags and
     /// content may change; local classifications and valid downloaded files survive.
     public func commitSyncPage(_ page: MailSyncPage, accountID: UUID) throws {
-        guard let accountIndex = state.accounts.firstIndex(where: { $0.id == accountID && $0.isReadOnly }) else { throw MailSyncError.accountNotFound }
+        guard let accountIndex = state.accounts.firstIndex(where: { $0.id == accountID && $0.isRemote }) else { throw MailSyncError.accountNotFound }
         guard page.messages.allSatisfy({ $0.accountID == accountID && !$0.providerID.isEmpty }) else { throw MailSyncError.accountMismatch }
         var candidate = state
         let deleted = Set(page.deletedProviderMessageIDs)
@@ -219,7 +254,7 @@ public final class ActionExecutor {
     /// nor failed retrieval moves the account's durable synchronization cursor.
     public func commitRemoteThread(_ thread: MailThread, sourceMessageID: UUID) throws {
         guard let source = state.messages.first(where: { $0.id == sourceMessageID }) else { throw MailThreadError.sourceUnavailable }
-        guard let account = state.accounts.first(where: { $0.id == source.accountID && $0.isReadOnly }) else { throw MailSyncError.accountNotFound }
+        guard let account = state.accounts.first(where: { $0.id == source.accountID && $0.isRemote }) else { throw MailSyncError.accountNotFound }
         guard account.status != .disconnected else { throw MailSyncError.disconnected }
         guard let providerThreadID = source.providerThreadID, !providerThreadID.isEmpty,
               thread.id == source.threadID, !thread.messages.isEmpty,
@@ -410,5 +445,162 @@ public final class ActionExecutor {
             address.range(of: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$"#, options: .regularExpression) != nil
         }) else { throw MailActionError.invalidRecipient }
         return parts.map { MailAddress(name: "", email: $0) }
+    }
+}
+
+extension ActionExecutor {
+    // These methods deliberately remain module-internal: the application can
+    // execute only through RemoteActionCoordinator, never publish fake receipts.
+    func beginRemoteAction(_ proposal: RemoteMailProposal) throws {
+        guard !state.remoteActionHistory.contains(where: { $0.id == proposal.id }) else { throw RemoteActionError.staleProposal }
+        guard !state.remoteActionHistory.contains(where: { $0.proposal.accountID == proposal.accountID && $0.status == .prepared }) else { throw RemoteActionError.alreadyExecuting }
+        var candidate = state
+        var record = RemoteActionRecord(proposal: proposal, date: now())
+        record.undoState = proposal.action.messageIDs.compactMap { id in state.messages.first(where: { $0.id == id }).map(RemoteUndoState.init) }
+        candidate.remoteActionHistory.append(record)
+        if proposal.action.isSend, let draftID = proposal.action.draftID,
+           let index = candidate.drafts.firstIndex(where: { $0.id == draftID }) { candidate.drafts[index].deliveryState = .sending }
+        do { try repository.save(candidate) } catch { throw RemoteActionError.persistenceFailed }
+        state = candidate
+    }
+
+    func failRemoteAction(_ id: UUID, error: RemoteActionError) throws {
+        guard let index = state.remoteActionHistory.firstIndex(where: { $0.id == id }) else { throw RemoteActionError.invalidRequest }
+        var candidate = state
+        let proposal = candidate.remoteActionHistory[index].proposal
+        let unknown = error == .outcomeUnknown || error == .persistenceFailed
+        candidate.remoteActionHistory[index].status = unknown ? .outcomeUnknown : .failed
+        candidate.remoteActionHistory[index].errorMessage = error.localizedDescription
+        if let draftID = proposal.action.draftID, let draftIndex = candidate.drafts.firstIndex(where: { $0.id == draftID }) {
+            if proposal.action.isSend { candidate.drafts[draftIndex].deliveryState = unknown ? .outcomeUnknown : .notSent }
+            else if unknown { candidate.drafts[draftIndex].draftSyncStatus = .outcomeUnknown }
+        }
+        try repository.save(candidate); state = candidate
+    }
+
+    func completeRemoteAction(_ request: AuthorizedRemoteAction, receipt: RemoteActionReceipt) throws -> RemoteActionRecord {
+        guard let index = state.remoteActionHistory.firstIndex(where: { $0.id == request.id && $0.status == .prepared }) else { throw RemoteActionError.invalidRequest }
+        let accountID = request.account.id
+        guard receipt.messages.allSatisfy({ $0.accountID == accountID && !$0.providerID.isEmpty }),
+              Set(receipt.messages.map(\.providerID)).count == receipt.messages.count else { throw MailSyncError.accountMismatch }
+        var candidate = state
+        if request.action.draftID != nil {
+            let previousDraftID = request.draft?.providerDraftMessageID ?? request.draft?.providerDraftID
+            let permittedRemovals = Set([previousDraftID].compactMap { $0 })
+            let removed = Set(receipt.removedProviderMessageIDs)
+            guard receipt.messages.isEmpty, receipt.removedProviderMessageIDs.count <= 1,
+                  removed.isSubset(of: permittedRemovals), !removed.contains("") else { throw MailSyncError.accountMismatch }
+            if !request.action.isSend {
+                guard let reference = receipt.draftReference, !reference.providerDraftID.isEmpty,
+                      !removed.contains(reference.providerMessageID ?? reference.providerDraftID) else { throw MailSyncError.unsupportedContent }
+            }
+            // IMAP can confirm replacement or post-send cleanup of one exact old
+            // Drafts UID. That receipt never authorizes deletion of other mail.
+            let removedLocalIDs = Set(candidate.messages.filter { $0.accountID == accountID && removed.contains($0.providerID) }.map(\.id))
+            candidate.messages.removeAll { removedLocalIDs.contains($0.id) }
+            candidate.summaries.removeAll { removedLocalIDs.contains($0.messageID) }
+            candidate.classifications.removeAll { removedLocalIDs.contains($0.messageID) }
+        } else {
+            let originalIDs = Set(request.messages.map(\.providerID)), removed = Set(receipt.removedProviderMessageIDs)
+            guard removed.isSubset(of: originalIDs), receipt.messages.count == request.messages.count else { throw MailSyncError.accountMismatch }
+            let returnedIDs = Set(receipt.messages.map(\.providerID))
+            switch request.action {
+            case .markRead(_, let value):
+                guard removed.isEmpty, returnedIDs == originalIDs, receipt.messages.allSatisfy({ $0.isRead == value }) else { throw MailSyncError.unsupportedContent }
+            case .flag(_, let value):
+                guard removed.isEmpty, returnedIDs == originalIDs, receipt.messages.allSatisfy({ $0.isFlagged == value }) else { throw MailSyncError.unsupportedContent }
+            case .move(_, let destination):
+                guard originalIDs.subtracting(returnedIDs) == removed, returnedIDs.subtracting(originalIDs).count == removed.count else { throw MailSyncError.accountMismatch }
+                guard receipt.messages.allSatisfy({ $0.providerFolderIDs.contains(destination.id) }) else { throw MailSyncError.unsupportedContent }
+            case .archive:
+                guard originalIDs.subtracting(returnedIDs) == removed, returnedIDs.subtracting(originalIDs).count == removed.count else { throw MailSyncError.accountMismatch }
+                if request.account.providerType == .gmail {
+                    guard receipt.messages.allSatisfy({ !$0.providerFolderIDs.contains("INBOX") && $0.folder != .inbox }) else { throw MailSyncError.unsupportedContent }
+                } else {
+                    let archiveIDs = Set(candidate.remoteFolders.filter { $0.accountID == accountID && $0.role == .archive }.map(\.id))
+                    guard !archiveIDs.isEmpty, receipt.messages.allSatisfy({ !archiveIDs.isDisjoint(with: $0.providerFolderIDs) }) else { throw MailSyncError.unsupportedContent }
+                }
+            default: throw MailSyncError.unsupportedContent
+            }
+            let removedLocalIDs = Set(candidate.messages.filter { $0.accountID == accountID && removed.contains($0.providerID) }.map(\.id))
+            // An identity replacement is accepted only from an acknowledged move.
+            // Transfer local annotations using source RFC Message-ID when unique.
+            let replacements = receipt.messages
+            for incomingIndex in replacements.indices where !originalIDs.contains(replacements[incomingIndex].providerID) {
+                let incoming = replacements[incomingIndex]
+                let matches = request.messages.filter {
+                    removed.contains($0.providerID) && ((removed.count == 1 && replacements.count == 1) || ($0.internetMessageID != nil && $0.internetMessageID == incoming.internetMessageID))
+                }
+                if matches.count == 1, let old = candidate.messages.first(where: { $0.id == matches[0].id }) {
+                    // mergeRemoteMessages preserves annotations on existing IDs;
+                    // retain the local record while replacing its provider identity.
+                    if let oldIndex = candidate.messages.firstIndex(where: { $0.id == old.id }) { candidate.messages[oldIndex].providerID = incoming.providerID }
+                }
+            }
+            candidate.messages.removeAll { $0.accountID == accountID && removed.contains($0.providerID) }
+            let trulyRemoved = removedLocalIDs.subtracting(candidate.messages.map(\.id))
+            candidate.summaries.removeAll { trulyRemoved.contains($0.messageID) }
+            candidate.classifications.removeAll { trulyRemoved.contains($0.messageID) }
+            mergeRemoteMessages(replacements, accountID: accountID, into: &candidate)
+        }
+        if let draftID = request.action.draftID, let draftIndex = candidate.drafts.firstIndex(where: { $0.id == draftID }) {
+            if let reference = receipt.draftReference {
+                candidate.drafts[draftIndex].providerDraftID = reference.providerDraftID
+                candidate.drafts[draftIndex].providerDraftMessageID = reference.providerMessageID
+            }
+            if request.action.isSend { candidate.drafts[draftIndex].deliveryState = .sent }
+            else { candidate.drafts[draftIndex].draftSyncStatus = Self.sameDraftContent(candidate.drafts[draftIndex], request.draft) ? .synced : .localOnly }
+        }
+        candidate.remoteActionHistory[index].status = .completed
+        if let originalID = request.action.isSend ? nil : candidate.remoteActionHistory[index].proposal.undoesRecordID,
+           let originalIndex = candidate.remoteActionHistory.firstIndex(where: { $0.id == originalID }) {
+            candidate.remoteActionHistory[originalIndex].undoneByActionID = request.id
+        }
+        candidate.remoteActionHistory[index].sentProviderMessageID = receipt.sentProviderMessageID
+        let advisories = Self.boundedRemoteAdvisories(receipt.advisories)
+        candidate.remoteActionHistory[index].errorMessage = advisories.isEmpty ? nil : advisories.joined(separator: "\n")
+        try repository.save(candidate); state = candidate
+        return candidate.remoteActionHistory[index]
+    }
+
+    private static func boundedRemoteAdvisories(_ advisories: [String]) -> [String] {
+        let omitted = "Additional provider guidance could not be displayed. Review the account if further cleanup is needed."
+        // Advice cannot turn an acknowledged send into an unknown result. Invalid
+        // or unbounded advice is replaced, while the delivery acknowledgement stays.
+        guard advisories.count <= 4 else { return [omitted] }
+        var safe: [String] = []
+        for value in advisories {
+            guard value.utf8.count <= 512, !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                if !safe.contains(omitted) { safe.append(omitted) }; continue
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { safe.append(trimmed) }
+        }
+        return safe
+    }
+
+    func resolveRemoteOutcome(_ id: UUID, resolution: RemoteOutcomeResolution) throws -> RemoteActionRecord {
+        guard let index = state.remoteActionHistory.firstIndex(where: { $0.id == id && $0.status == .outcomeUnknown }) else { throw RemoteActionError.invalidRequest }
+        var candidate = state
+        candidate.remoteActionHistory[index].resolution = resolution
+        candidate.remoteActionHistory[index].resolvedAt = now()
+        candidate.remoteActionHistory[index].status = resolution == .confirmedApplied ? .completed : .failed
+        candidate.remoteActionHistory[index].errorMessage = resolution == .confirmedApplied ? "User checked the account and confirmed the action was applied." : "User checked the account and confirmed the action was not applied. A new reviewed attempt is allowed."
+        if resolution == .confirmedApplied, let originalID = candidate.remoteActionHistory[index].proposal.undoesRecordID,
+           let originalIndex = candidate.remoteActionHistory.firstIndex(where: { $0.id == originalID }) {
+            candidate.remoteActionHistory[originalIndex].undoneByActionID = id
+        }
+        let action = candidate.remoteActionHistory[index].proposal.action
+        if let id = action.draftID, let draftIndex = candidate.drafts.firstIndex(where: { $0.id == id }) {
+            if action.isSend { candidate.drafts[draftIndex].deliveryState = resolution == .confirmedApplied ? .sent : .notSent }
+            else { candidate.drafts[draftIndex].draftSyncStatus = resolution == .confirmedApplied ? .outcomeUnknown : .localOnly }
+        }
+        try repository.save(candidate); state = candidate
+        return candidate.remoteActionHistory[index]
+    }
+
+    private static func sameDraftContent(_ lhs: Draft, _ rhs: Draft?) -> Bool {
+        guard let rhs else { return false }
+        return lhs.accountID == rhs.accountID && lhs.replyToMessageID == rhs.replyToMessageID && lhs.to == rhs.to && lhs.cc == rhs.cc && lhs.bcc == rhs.bcc && lhs.subject == rhs.subject && lhs.body == rhs.body && lhs.attachments == rhs.attachments
     }
 }

@@ -4,18 +4,21 @@ import Foundation
 public final class MicrosoftMailProvider: ReadOnlyMailProvider {
     public let name = "Microsoft · Read only"
     public let accountID: UUID
-    private let reference: MailCredentialReference
-    private let configuration: OAuthClientConfiguration
+    let reference: MailCredentialReference
+    let configuration: OAuthClientConfiguration
     private let reader: AuthorizedMailReader
+    let writer: AuthorizedMailWriteTransport
     private var folderCache: [MailFolderDescriptor] = []
     private var hasDiscoveredFolders = false
     private var threadIDs: [UUID: String] = [:]
     private let immutablePreference = "IdType=\"ImmutableId\""
-    private static let messageFields = "id,conversationId,from,toRecipients,ccRecipients,subject,body,receivedDateTime,sentDateTime,parentFolderId,isRead,flag,importance,hasAttachments,isDraft"
+    private static let messageFields = "id,conversationId,from,toRecipients,ccRecipients,subject,body,receivedDateTime,sentDateTime,parentFolderId,isRead,flag,importance,hasAttachments,isDraft,replyTo,internetMessageId,internetMessageHeaders"
     public init(accountID: UUID, credentialReference: MailCredentialReference, configuration: OAuthClientConfiguration,
                 credentials: any CredentialStore = KeychainCredentialStore(), http: any MailHTTPClient = SecureMailHTTPClient()) {
         self.accountID = accountID; reference = credentialReference; self.configuration = configuration
-        reader = AuthorizedMailReader(tokens: OAuthAccessTokenProvider(configuration: configuration, reference: credentialReference, credentials: credentials, http: http), http: http, host: "graph.microsoft.com")
+        let tokens = OAuthAccessTokenProvider(configuration: configuration, reference: credentialReference, credentials: credentials, http: http)
+        writer = AuthorizedMailWriteTransport(configuration: configuration, tokens: tokens, http: http)
+        reader = AuthorizedMailReader(tokens: tokens, http: http, host: "graph.microsoft.com")
     }
     private func url(_ path: [String], query: [URLQueryItem] = []) throws -> URL { try MailHTTP.url(host: "graph.microsoft.com", path: ["v1.0", "me"] + path, query: query) }
     private func get(_ url: URL, pageSize: Int? = nil) async throws -> Data {
@@ -32,11 +35,12 @@ public final class MicrosoftMailProvider: ReadOnlyMailProvider {
         if let expectedURL { try GraphResourcePath.validate(result, matches: expectedURL) }
         return result
     }
+    func readForWrite(_ path: [String], query: [URLQueryItem] = []) async throws -> Data { try await get(url(path, query: query)) }
     public func fetchAccounts() async throws -> [MailAccount] {
         let profile = try MailHTTP.decode(GraphProfile.self, await get(url([], query: [URLQueryItem(name: "$select", value: "id,displayName,mail,userPrincipalName")])) )
         let email = profile.mail.flatMap { $0.isEmpty ? nil : $0 } ?? profile.userPrincipalName
         guard !profile.id.isEmpty, email.contains("@") else { throw RemoteMailError.malformedResponse }
-        return [MailAccount(id: accountID, name: "Microsoft", address: MailAddress(name: profile.displayName ?? email, email: email), provider: "Microsoft", providerType: .microsoft, providerAccountID: profile.id, credentialReference: reference, status: .connected, oauthClientID: configuration.clientID)]
+        return [MailAccount(id: accountID, name: "Microsoft", address: MailAddress(name: profile.displayName ?? email, email: email), provider: "Microsoft", providerType: .microsoft, providerAccountID: profile.id, credentialReference: reference, status: .connected, oauthClientID: configuration.clientID, oauthAccessLevel: configuration.accessLevel)]
     }
     public func fetchRemoteFolders() async throws -> [MailFolderDescriptor] {
         let known: [(String, MailFolder)] = [("inbox", .inbox), ("sentitems", .sent), ("drafts", .drafts), ("deleteditems", .trash), ("archive", .archive)]
@@ -249,6 +253,7 @@ struct GraphFolderPage: Decodable {
 struct GraphEmailAddress: Decodable { let name: String?; let address: String? }
 struct GraphRecipient: Decodable { let emailAddress: GraphEmailAddress }
 struct GraphBody: Decodable { let contentType: String; let content: String }
+struct GraphInternetHeader: Decodable { let name: String; let value: String }
 struct GraphFlag: Decodable { let flagStatus: String? }
 struct GraphMessageDTO: Decodable {
     let id: String
@@ -266,7 +271,10 @@ struct GraphMessageDTO: Decodable {
     let importance: String?
     let hasAttachments: Bool?
     let isDraft: Bool?
-    private enum CodingKeys: String, CodingKey { case id, conversationId, from, toRecipients, ccRecipients, subject, body, receivedDateTime, sentDateTime, parentFolderId, isRead, flag, importance, hasAttachments, isDraft }
+    let replyTo: [GraphRecipient]?
+    let internetMessageId: String?
+    let internetMessageHeaders: [GraphInternetHeader]?
+    private enum CodingKeys: String, CodingKey { case id, conversationId, from, toRecipients, ccRecipients, subject, body, receivedDateTime, sentDateTime, parentFolderId, isRead, flag, importance, hasAttachments, isDraft, replyTo, internetMessageId, internetMessageHeaders }
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -284,6 +292,9 @@ struct GraphMessageDTO: Decodable {
         importance = try values.decodeIfPresent(String.self, forKey: .importance)
         hasAttachments = try values.decodeIfPresent(Bool.self, forKey: .hasAttachments)
         isDraft = try values.decodeIfPresent(Bool.self, forKey: .isDraft)
+        replyTo = try values.decodeIfPresent([GraphRecipient].self, forKey: .replyTo)
+        internetMessageId = try values.decodeIfPresent(String.self, forKey: .internetMessageId)
+        internetMessageHeaders = try values.decodeIfPresent([GraphInternetHeader].self, forKey: .internetMessageHeaders)
     }
 }
 struct GraphMessageReference: Decodable { let id: String }
@@ -322,7 +333,7 @@ enum MicrosoftMapping {
                            date: date ?? Date(timeIntervalSince1970: 0), folder: wire.isDraft == true ? .drafts : role ?? .archive,
                            isRead: wire.isRead ?? false, isFlagged: wire.flag?.flagStatus == "flagged", attachments: attachments,
                            providerThreadID: thread, providerFolderIDs: wire.parentFolderId.map { [$0] } ?? [], htmlBody: isHTML ? limited : nil,
-                           cc: (wire.ccRecipients ?? []).map(address), isImportant: wire.importance == "high", contentWarnings: warnings)
+                           cc: (wire.ccRecipients ?? []).map(address), isImportant: wire.importance == "high", contentWarnings: warnings, replyTo: (wire.replyTo ?? []).map(address), internetMessageID: wire.internetMessageId, references: RESTMailContent.messageReferences(wire.internetMessageHeaders?.first { $0.name.lowercased() == "references" }?.value))
     }
     static func attachment(_ wire: GraphAttachment, accountID: UUID, messageID: String) -> MailAttachment {
         MailAttachment(id: StableMailIdentity.message(accountID: accountID, providerID: "attachment:\(messageID):\(wire.id)"),

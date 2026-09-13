@@ -1,6 +1,6 @@
 # Flora Mail
 
-A runnable macOS research prototype for **Designing for Intelligence: A Human-Guided Framework for AI-Augmented Applications**. Built with Swift 6 and SwiftUI, with a complete demo mail workflow, read-only Gmail/Microsoft/iCloud account adapters, and real on-device inference through Ollama.
+A runnable macOS research prototype for **Designing for Intelligence: A Human-Guided Framework for AI-Augmented Applications**. Built with Swift 6 and SwiftUI, with a complete demo mail workflow, Gmail/Microsoft/iCloud account adapters with explicit mail-action permissions, and real on-device inference through Ollama.
 
 ## Launch
 
@@ -37,12 +37,12 @@ You can also open a blank composer with **⌘N**, reply/forward from a message, 
 - Native, resizable sidebar, message list and reader; Today dashboard; light/dark appearance; text selection, accessibility labels, keyboard navigation and context menus.
 - Conventional mail destinations plus Important, user-owned categories and two demo accounts; 16 realistic fictional messages, conversation links, and a saved draft. Connected real accounts and provider folders appear separately from Demo Mode.
 - Conventional search within the current mailbox, with a separate optional demo semantic mode. Search failures return to text matching.
-- Demo compose/send, saved drafts, reply, forward, flag, explicit read/unread, archive, reversible Trash, and move back to Inbox. Category creation/rename/removal and local classification remain user-controlled. Real-account replies and writing tools create local drafts only; real mailbox mutations and sending are blocked.
+- Demo compose/send, saved drafts, reply, forward, flag, explicit read/unread, archive, reversible Trash, and move back to Inbox. Category creation/rename/removal and local classification remain user-controlled. Real accounts support confirmed read/flag changes, archive, move, draft synchronization and sending after explicit permission. Reply All, Cc/Bcc and bounded composer attachments use the normal composer.
 - Embedded source-backed summaries, classification suggestions, action extraction, smart replies and writing previews through either `MockAIProvider` or real `LocalAIProvider`.
 - Local AI settings with saved model/loopback endpoint, connection test, timeout, cancellation, cache clearing and visible unavailable states.
 - Persistent capability caches keyed by source content, capability, model digest, endpoint and prompt version. Draft rewrites are deliberately not cached.
 - Optional read-only assistant search panel linking to original messages; no chat requirement for mail controls.
-- Centralized permission checking, transactional local changes, explicit demo-send confirmation, persistent activity history and session-only mail Undo.
+- Centralized permission checking, transactional local changes, confirmed remote actions, durable send/outcome history, real read/flag inverse operations and session-only local Undo.
 - Versioned atomic JSON persistence for account metadata, messages, categories, drafts, preferences, summaries, classifications, rules and action history.
 - `AIProvider`, `MailProvider`, `ReadOnlyMailProvider`, `CredentialStore` and `MailRepository` abstractions. Account settings, cancellable bounded sync, persistent checkpoints, offline browsing, safe MIME/HTML-to-text decoding, and requested attachment downloads. Rule authorization and scope checks remain confined to Demo accounts; no automation scheduler or rule editor is enabled.
 
@@ -54,18 +54,18 @@ You can also open a blank composer with **⌘N**, reply/forward from a message, 
 
 ## Connect a real account
 
-1. Open **Settings → Accounts → Add Account** and choose **Google**, **Microsoft Outlook**, or **iCloud Mail**.
-2. For Google/Microsoft, enter your registered native application's public client ID, then complete sign-in in the system browser. For iCloud, enter the mail address and an Apple-generated app-specific password in the secure field.
+1. Use **Add Account** in the toolbar or **Settings → Accounts → Add Account** and choose **Google**, **Microsoft Outlook**, or **iCloud Mail**.
+2. For Google/Microsoft, enter or import your registered native application's public client ID, then complete sign-in in the system browser. For iCloud, enter the mail address and an Apple-generated app-specific password in the secure field.
 3. After connection, Flora retrieves a recent batch into its local store and switches the mail view out of Demo Mode. Browse the account or its folders and open a cached message.
 4. Use **Sync Now**, **Load Next Batch**, or **Cancel Sync** in Accounts settings. The **Sync Limits** section controls the recent window and batch limit. The defaults are 30 days, up to 200 messages per run, and an internal page size of 50.
 5. If a saved provider checkpoint expires, **Restart Recent Sync** starts a fresh bounded pass while preserving cached messages. Reauthenticate when authorization expires or is revoked.
 6. Open a synchronized message with **Local AI** selected to request assistance from the existing local provider. Accepted categories are local Flora assignments and do not alter server labels or folders.
 
-Gmail requests `gmail.readonly`. Microsoft requests delegated `Mail.Read`, `User.Read` for account identity, and `offline_access` for refresh. iCloud uses TLS IMAP and an app-specific password; Flora never requests the primary Apple Account password or enables SMTP. All secrets are stored in macOS Keychain. Google/Microsoft registration and consent requirements are described in [provider setup](Docs/ProviderSetup.md); iCloud protocol and setup details are in [iCloud notes](Docs/iCloud.md).
+Accounts start read-only. **Allow mailbox changes and sending**, or **Enable Mailbox Actions** in Accounts, is explicit permission to request Gmail `gmail.modify` (including send) or Microsoft `Mail.ReadWrite` + `Mail.Send`. Read-only requests remain `gmail.readonly` or delegated `Mail.Read`; Microsoft also uses `User.Read` for identity and `offline_access` for refresh. iCloud uses TLS IMAP and STARTTLS SMTP with an app-specific password; Flora never requests the primary Apple Account password. All secrets are stored in macOS Keychain. Google/Microsoft registration and consent requirements are described in [provider setup](Docs/ProviderSetup.md); iCloud protocol and setup details are in [iCloud notes](Docs/iCloud.md).
 
 **Demo Mode** selects fictional versus real mail. **Demo AI / Local AI / Off** independently selects assistance. No real account is required to launch or demonstrate the application. Disconnecting removes this device's saved credentials, preserves cached mail, and does not revoke provider-side consent.
 
-Real accounts are read-only throughout the provider and action layers: no sending, archive, delete, move, flag, or read/unread changes. Opening a real message does not mark it read on the server. Local drafts, classifications, and AI caches can still be saved. The GUI displays cached conversations and can explicitly load more through each provider. HTML has a plain-text fallback and an optional isolated formatted view; scripts, remote images, tracking resources and navigation are blocked. Downloaded image attachments can be explicitly previewed and included in CID locations.
+Opening a message never changes its read state automatically. Real mail actions require an account permission and an exact confirmation preview. **Save Draft** stays local; **Sync Draft** explicitly updates the provider. Attachments are copied into controlled local storage (2 MiB each, 8 MiB total) and their hashes bind the reviewed content. Local drafts, classifications and AI caches remain available offline. The GUI displays cached conversations and can explicitly load more through each provider. HTML has a plain-text fallback and an optional isolated formatted view; scripts, remote images, tracking resources and navigation are blocked. Downloaded image attachments can be explicitly previewed and included in CID locations.
 
 The connection/sync code is implemented and covered by fake-provider tests. **Live Gmail, Microsoft, and iCloud authentication has not been verified in this environment because account credentials/application registrations were unavailable.** Consequently, Local AI over a live retrieved user's message remains unverified; the same normalized-message path is used by tests and Demo mail.
 
@@ -84,15 +84,17 @@ Flora checks local model metadata and forces the runtime's `:local` selector on 
 
 A stopped service, missing model, timeout, cancelled request, invalid JSON or unsupported response leaves the original email and normal composer usable. Local semantic search is deferred: the search UI falls back to conventional text matches rather than sending a whole mailbox to a language model.
 
-Real sending and mailbox writes, calendar integration, learned preferences, whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. Formatted HTML supports a restricted subset of mail presentation; encrypted content and universal layout fidelity are not supported. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
+Calendar integration, learned preferences, whole-thread generated summaries, research-mode switching and evaluation telemetry remain deferred. Formatted HTML supports a restricted subset of mail presentation; encrypted content and universal layout fidelity are not supported. MIME and HTML are decoded into safe text; attachment metadata is synchronized and files download only on request. Demo attachment rows remain fixture metadata. No interaction metrics or message contents are collected for telemetry.
 
 ## Data and Undo
 
 Mail data lives at `~/Library/Application Support/FloraMail/demo-store.json`; the existing filename now contains both demo records and synchronized real mail, isolated by account identity. Versioned AI capability results live beside it in `ai-cache.json`, and requested downloads live under `Attachments/`. Tokens/passwords are in Keychain; the mail store retains only credential references and public OAuth client IDs. Existing stores migrate optional account/sync/configuration fields without reseeding or discarding earlier data. Fixtures are seeded only when the store does not exist; their dates are anchored to that first launch. Data survives rebuilding and reopening the app. The versioned repository rejects corrupt or unsupported stores without overwriting them, then the app visibly uses temporary in-memory demo data for that session.
 
-Mail Undo is available through the status bar, Activity, or **⌥⌘Z**. It restores changes in reverse order during the current session and preserves unrelated AI caches and preferences. Action history survives relaunch; inverse operations do not. Standard text editing uses **⌘Z**. No permanent deletion is exposed.
+Local Mail Undo is available through the status bar, Activity, or **⌥⌘Z**. Remote read/flag changes offer **Preview Undo** in Activity when their acknowledged state still matches; this calls the provider with an inverse operation. Sends, archive and move have no automatic remote Undo. It restores changes in reverse order during the current session and preserves unrelated AI caches and preferences. Action history survives relaunch; inverse operations do not. Standard text editing uses **⌘Z**. No permanent deletion is exposed.
 
 For a demo-only installation, quit and move `demo-store.json` to a backup location to start with fresh fixtures. Once real accounts are connected, preserve the store: it contains cached real mail, classifications, and account metadata. Disconnect accounts through Settings before replacing their metadata. Mail/cache JSON files are local, protected with restrictive file permissions, and not an encrypted production database.
+
+Unsaved composer edits have a separate, debounced `composer-recovery.json` copy. A restart offers Review or Discard without replacing saved drafts. Remote writes journal their intent before networking. An ambiguous send/draft outcome remains blocked across restart; **Activity → Review Outcome** records the user's explicit check of the provider. No blind network retry or duplicate send is attempted.
 
 ## Validation
 

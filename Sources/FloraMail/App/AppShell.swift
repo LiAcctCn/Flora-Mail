@@ -3,6 +3,7 @@ import FloraCore
 
 struct AppShell: View {
     @Environment(AppModel.self) private var model
+    @State private var discardRecovery = false
 
     var body: some View {
         @Bindable var model = model
@@ -10,6 +11,14 @@ struct AppShell: View {
             SidebarView().navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 270)
         } detail: {
             VStack(spacing: 0) {
+                if let draft = model.recoverableDraft {
+                    HStack {
+                        Label("Recover unsaved draft: \(draft.subject.isEmpty ? "Untitled" : draft.subject)", systemImage: "doc.badge.clock").font(.caption).lineLimit(1)
+                        Spacer()
+                        Button("Review") { model.recoverUnsavedDraft() }
+                        Button("Discard…") { discardRecovery = true }
+                    }.padding(10).background(.orange.opacity(0.08))
+                }
                 if let warning = model.storageWarning {
                     Label(warning, systemImage: "externaldrive.badge.exclamationmark")
                         .font(.caption).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.1))
@@ -67,6 +76,10 @@ struct AppShell: View {
         .sheet(isPresented: $model.showingHistory) { ActivityView().environment(model) }
         .sheet(isPresented: $model.showingCategories) { CategoriesView().environment(model) }
         .sheet(isPresented: $model.showingAssistant) { AssistantView().environment(model) }
+        .sheet(item: $model.pendingRemoteAction) { proposal in RemoteActionPreview(proposal: proposal).environment(model) }
+        .confirmationDialog("Discard the recovered unsaved draft?", isPresented: $discardRecovery, titleVisibility: .visible) {
+            Button("Discard Recovery Copy", role: .destructive) { model.discardRecoveredDraft() }
+        } message: { Text("Previously saved drafts are kept.") }
         .alert("Couldn’t complete that action", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
@@ -105,9 +118,9 @@ private struct SidebarView: View {
                 } header: { Text("Categories") }
                 Section(model.state.preferences.showDemoAccounts ? "Accounts · Demo" : "Accounts") {
                     ForEach(model.displayedAccounts) { account in
-                        Label(account.isReadOnly ? account.address.email : account.name, systemImage: "at")
+                        Label(account.isRemote ? account.address.email : account.name, systemImage: "at")
                             .tag(MailDestination.account(account.id))
-                        if account.isReadOnly {
+                        if account.isRemote {
                             DisclosureGroup("Folders & Labels") {
                                 ForEach(model.state.remoteFolders.filter { $0.accountID == account.id }) { folder in
                                     Label(folder.name, systemImage: folder.isLabel ? "tag" : "folder")
@@ -121,7 +134,7 @@ private struct SidebarView: View {
             }.listStyle(.sidebar)
             Divider().padding(.horizontal, 12)
             HStack {
-                Label(model.state.preferences.showDemoAccounts ? "Demo Mode" : "Read-only mail", systemImage: "internaldrive").font(.caption2).foregroundStyle(.secondary)
+                Label(model.state.preferences.showDemoAccounts ? "Demo Mode" : "Cached mail", systemImage: "internaldrive").font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 SettingsLink { Image(systemName: "gearshape") }.buttonStyle(.plain).help("Settings")
             }.padding(16)
@@ -269,7 +282,7 @@ private struct MailSyncStatusView: View {
             } else if let date = accounts.compactMap({ $0.syncState.lastSuccessfulSync }).min() {
                 Text("Last updated \(date.formatted(.relative(presentation: .named))) · Cached mail is available offline").font(.caption).foregroundStyle(.secondary)
             } else {
-                Text(accounts.isEmpty ? "Connect an account in Settings to retrieve mail." : "Read-only mail · Sync to retrieve recent messages.").font(.caption).foregroundStyle(.secondary)
+                Text(accounts.isEmpty ? "Connect an account in Settings to retrieve mail." : "Cached mail · Sync to retrieve recent messages.").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if accounts.contains(where: { $0.credentialReference != nil }) {

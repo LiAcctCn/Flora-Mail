@@ -33,7 +33,7 @@ public enum RemoteMailError: Error, LocalizedError, Equatable, Sendable, MailSyn
         switch self {
         case .invalidConfiguration: "Account configuration is incomplete or invalid. Check the registered application ID."
         case .authenticationRequired: "Authentication expired or was revoked. Reconnect this account."
-        case .authorizationDenied: "Mail access was not granted. Reconnect and approve read-only mail access."
+        case .authorizationDenied: "Mail access was not granted. Reconnect and approve the requested mail access."
         case .cancelled: "Account sign-in was cancelled."
         case .networkUnavailable: "Unable to reach the mail service. Cached mail remains available."
         case .timedOut: "The mail service took too long to respond. Try again."
@@ -43,7 +43,7 @@ public enum RemoteMailError: Error, LocalizedError, Equatable, Sendable, MailSyn
         case .unsupportedContent: "This message content is not supported yet."
         case .responseTooLarge: "This message or attachment exceeds the prototype's download limit."
         case .staleCheckpoint: "The saved sync position expired. A new recent-mail sync is required."
-        case .readOnly: "Real accounts are read-only in this version of Flora Mail."
+        case .readOnly: "This account has not authorized mail changes."
         }
     }
 }

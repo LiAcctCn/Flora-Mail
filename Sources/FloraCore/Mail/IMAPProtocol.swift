@@ -78,13 +78,13 @@ public enum IMAPCommand: Sendable {
             return "UID SEARCH OR HEADER Message-ID \(quoted) OR HEADER References \(quoted) HEADER In-Reply-To \(quoted)"
         case .headers(let uid):
             guard uid > 0 else { throw IMAPError.invalidConfiguration }
-            return "UID FETCH \(uid) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)]<0.65536>)"
+            return "UID FETCH \(uid) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO CC REPLY-TO SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)]<0.65536>)"
         case .flags(let uids):
             guard !uids.isEmpty, uids.count <= 500, uids.allSatisfy({ $0 > 0 }) else { throw IMAPError.invalidConfiguration }
             return "UID FETCH \(uids.map(String.init).joined(separator: ",")) (UID FLAGS)"
         case .metadata(let uid):
             guard uid > 0 else { throw IMAPError.invalidConfiguration }
-            return "UID FETCH \(uid) (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)])"
+            return "UID FETCH \(uid) (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (FROM TO CC REPLY-TO SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)])"
         case .body(let uid, let section, let maximum):
             guard uid > 0, maximum > 0, maximum <= 25 * 1_024 * 1_024, !section.isEmpty, section.utf8.count <= 100,
                   section.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }), !section.hasPrefix("."), !section.hasSuffix("."),
@@ -101,8 +101,9 @@ public enum IMAPCommand: Sendable {
 
 public struct IMAPResponse: Sendable {
     public let records: [Data]
-    public init(records: [Data]) { self.records = records }
-    public init(lines: [String]) { records = lines.map { Data($0.utf8) } }
+    public let completion: String?
+    public init(records: [Data], completion: String? = nil) { self.records = records; self.completion = completion }
+    public init(lines: [String], completion: String? = nil) { records = lines.map { Data($0.utf8) }; self.completion = completion }
     var strings: [String] { records.map { String(decoding: $0, as: UTF8.self) } }
 }
 public protocol IMAPSession: Sendable {

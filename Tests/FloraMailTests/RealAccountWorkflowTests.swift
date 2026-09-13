@@ -228,7 +228,7 @@ struct RealAccountWorkflowTests {
         model.archive(source); model.trash(source); model.toggleFlag(source); model.toggleRead(source)
         #expect(model.state.messages == original.messages)
         #expect(model.state.history.isEmpty)
-        #expect(model.errorMessage == MailActionError.readOnlyAccount.localizedDescription)
+        #expect(model.errorMessage == RemoteActionError.permissionDenied.localizedDescription)
     }
 
     @Test func cachedMailAccountConfigurationAndLocalPreferencesSurviveRestart() throws {

@@ -25,7 +25,13 @@ private final class IMAPCompletion<Value: Sendable>: @unchecked Sendable {
 
 /// Certificate validation and hostname checking use Network.framework defaults.
 /// The only host is Apple's documented IMAP endpoint; no plaintext/STARTTLS path.
-private final class IMAPTLSTransport: @unchecked Sendable {
+protocol IMAPTransport: Sendable {
+    func beginCommand()
+    func send(_ data: Data) async throws
+    func receive() async throws -> Data
+    func close()
+}
+private final class IMAPTLSTransport: IMAPTransport, @unchecked Sendable {
     let connection: NWConnection
     let queue = DispatchQueue(label: "com.flora.mail.imap")
     let timeout: TimeInterval
@@ -107,12 +113,12 @@ private extension IMAPCompletion {
     }
 }
 
-private actor NetworkIMAPSession: IMAPSession {
-    private let transport: IMAPTLSTransport
+actor NetworkIMAPSession: IMAPWritableSession {
+    private let transport: any IMAPTransport
     private var buffer = Data()
     private var sequence = 0
     private var isExecuting = false
-    init(transport: IMAPTLSTransport) { self.transport = transport }
+    init(transport: any IMAPTransport) { self.transport = transport }
     func readGreeting() async throws {
         let line = try await readLine()
         guard String(decoding: line, as: UTF8.self).uppercased().hasPrefix("* OK") else { transport.close(); throw IMAPError.unavailable }
@@ -121,42 +127,85 @@ private actor NetworkIMAPSession: IMAPSession {
         guard !isExecuting else { throw IMAPError.invalidConfiguration }
         isExecuting = true; defer { isExecuting = false }
         sequence += 1; let tag = "F\(sequence)"
-        let text = try command.wireText()
-        transport.beginCommand()
-        try await transport.send(Data("\(tag) \(text)\r\n".utf8))
-        var records: [Data] = []; var total = 0
+        let text = try command.wireText(); transport.beginCommand()
         do {
-            while true {
-                try Task.checkCancellation()
-                var record = try await readLine()
-                let firstLine = String(decoding: record, as: UTF8.self)
-                if firstLine.hasPrefix(tag + " ") {
-                    let status = firstLine.split(separator: " ").dropFirst().first?.uppercased()
-                    guard status == "OK" else {
-                        if case .login = command { throw IMAPError.authenticationFailed }
-                        throw IMAPError.malformedResponse
-                    }
-                    return IMAPResponse(records: records)
-                }
-                if firstLine.uppercased().hasPrefix("* BYE") {
-                    if case .logout = command { return IMAPResponse(records: records) }
-                    throw IMAPError.unavailable
-                }
-                var tail = record; var literalCount = 0
-                while let length = try literalLength(tail) {
-                    literalCount += 1
-                    guard length <= 26 * 1_024 * 1_024, literalCount <= 500,
-                          record.count <= 28 * 1_024 * 1_024 - length else { throw IMAPError.responseTooLarge }
-                    record.append(try await readExact(length))
-                    tail = try await readLine()
-                    guard record.count + tail.count <= 28 * 1_024 * 1_024 else { throw IMAPError.responseTooLarge }
-                    record.append(tail)
-                }
-                total += record.count
-                guard total <= 28 * 1_024 * 1_024, records.count < 20_000 else { throw IMAPError.responseTooLarge }
-                records.append(record)
-            }
+            try await transport.send(Data("\(tag) \(text)\r\n".utf8))
+            return try await readCompletion(tag: tag, login: { if case .login = command { true } else { false } }(), logout: { if case .logout = command { true } else { false } }())
         } catch { transport.close(); throw error }
+    }
+    func executeWrite(_ command: IMAPWriteCommand) async throws -> IMAPResponse {
+        guard !isExecuting else { throw RemoteActionError.invalidRequest }
+        let text = try command.wireText()
+        isExecuting = true; defer { isExecuting = false }
+        sequence += 1; let tag = "W\(sequence)"; transport.beginCommand()
+        var mayHaveChanged = false
+        do {
+            if case .append(_, let data) = command {
+                try await transport.send(Data("\(tag) \(text)\r\n".utf8))
+                // Synchronizing literals never transmit message bytes until the
+                // server accepts APPEND. No LITERAL+ or pipelined write commands.
+                var count = 0
+                while true {
+                    let record = try await readRecord(); count += 1
+                    guard count <= 100 else { throw IMAPError.responseTooLarge }
+                    let line = String(decoding: record, as: UTF8.self)
+                    if line.hasPrefix("+") { break }
+                    if line.hasPrefix(tag + " ") { throw RemoteActionError.permissionDenied }
+                    if line.uppercased().hasPrefix("* BYE") { throw RemoteActionError.unavailable }
+                }
+                try Task.checkCancellation()
+                mayHaveChanged = true
+                var literal = data; literal.append(contentsOf: [13, 10])
+                try await transport.send(literal)
+            } else {
+                try Task.checkCancellation()
+                mayHaveChanged = command.changesMailbox
+                try await transport.send(Data("\(tag) \(text)\r\n".utf8))
+            }
+            return try await readCompletion(tag: tag, write: true)
+        } catch let error as RemoteActionError {
+            transport.close()
+            if mayHaveChanged, error != .permissionDenied { throw RemoteActionError.outcomeUnknown }
+            throw error
+        } catch {
+            transport.close()
+            if mayHaveChanged { throw RemoteActionError.outcomeUnknown }
+            if error is CancellationError { throw error }
+            throw RemoteActionError.unavailable
+        }
+    }
+    private func readCompletion(tag: String, login: Bool = false, logout: Bool = false, write: Bool = false) async throws -> IMAPResponse {
+        var records: [Data] = []; var total = 0
+        while true {
+            try Task.checkCancellation()
+            let record = try await readRecord()
+            let line = String(decoding: record, as: UTF8.self)
+            if line.hasPrefix(tag + " ") {
+                let status = line.split(separator: " ").dropFirst().first?.uppercased()
+                guard status == "OK" else {
+                    if write, status == "NO" || status == "BAD" { throw RemoteActionError.permissionDenied }
+                    if login { throw IMAPError.authenticationFailed }
+                    throw IMAPError.malformedResponse
+                }
+                return IMAPResponse(records: records, completion: line)
+            }
+            if line.uppercased().hasPrefix("* BYE") { if logout { return IMAPResponse(records: records) }; throw IMAPError.unavailable }
+            total += record.count
+            guard total <= 28 * 1_024 * 1_024, records.count < 20_000 else { throw IMAPError.responseTooLarge }
+            records.append(record)
+        }
+    }
+    private func readRecord() async throws -> Data {
+        var record = try await readLine(); var tail = record; var literalCount = 0
+        while let length = try literalLength(tail) {
+            literalCount += 1
+            guard length <= 26 * 1_024 * 1_024, literalCount <= 500,
+                  record.count <= 28 * 1_024 * 1_024 - length else { throw IMAPError.responseTooLarge }
+            record.append(try await readExact(length)); tail = try await readLine()
+            guard record.count + tail.count <= 28 * 1_024 * 1_024 else { throw IMAPError.responseTooLarge }
+            record.append(tail)
+        }
+        return record
     }
     func close() { transport.close() }
     private func readLine() async throws -> Data {

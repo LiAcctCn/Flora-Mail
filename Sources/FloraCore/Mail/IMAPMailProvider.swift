@@ -233,7 +233,7 @@ public final class ICloudMailProvider: ReadOnlyMailProvider {
                            threadID: StableMailIdentity.thread(accountID: accountID, providerID: threadReference), from: MIMEParser.addresses(headers["from"] ?? "").first ?? MailAddress(name: "Unknown sender", email: ""),
                            to: MIMEParser.addresses(headers["to"] ?? ""), subject: headers["subject"] ?? "(No subject)", body: body, date: MIMEParser.date(headers["date"]) ?? metadata.date ?? Date(timeIntervalSince1970: 0),
                            folder: folder.role ?? .archive, isRead: metadata.flags.contains("\\seen"), isFlagged: metadata.flags.contains("\\flagged"), attachments: attachments,
-                           providerThreadID: threadReference, providerFolderIDs: [folder.id], htmlBody: htmlParts.isEmpty ? nil : htmlParts.joined(separator: "\n"), cc: MIMEParser.addresses(headers["cc"] ?? ""), contentWarnings: Array(Set(warnings)).sorted())
+                           providerThreadID: threadReference, providerFolderIDs: [folder.id], htmlBody: htmlParts.isEmpty ? nil : htmlParts.joined(separator: "\n"), cc: MIMEParser.addresses(headers["cc"] ?? ""), contentWarnings: Array(Set(warnings)).sorted(), replyTo: MIMEParser.addresses(headers["reply-to"] ?? ""), internetMessageID: MIMEParser.messageIdentifiers(headers["message-id"]).first, references: MIMEParser.messageIdentifiers(headers["references"]))
     }
     private func checkConversationDeadline(_ deadline: Date?) throws {
         if let deadline, now() >= deadline { throw IMAPConversationBudgetExceeded() }
@@ -265,7 +265,7 @@ private struct IMAPCursor: Codable {
     var uids: [UInt32] = []; var validity: UInt32?; var loaded = false
 }
 private struct IMAPMessageReference: Codable { var folder: String; var validity: UInt32; var uid: UInt32 }
-private struct IMAPAttachmentReference: Codable { var accountID: UUID; var messageID: String; var validity: UInt32; var uid: UInt32; var section: String; var encoding: String; var encodedSize: Int }
+struct IMAPAttachmentReference: Codable { var accountID: UUID; var messageID: String; var validity: UInt32; var uid: UInt32; var section: String; var encoding: String; var encodedSize: Int }
 
 /// Internal control flow for returning an already retrieved partial conversation.
 private struct IMAPConversationBudgetExceeded: Error {}

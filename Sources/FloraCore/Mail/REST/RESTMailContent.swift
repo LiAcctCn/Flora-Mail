@@ -4,6 +4,14 @@ import Foundation
 /// A malformed envelope still fails closed because no trustworthy message record
 /// can be constructed; only the unsupported body is replaced with empty text.
 enum RESTMailContent {
+    static func messageReferences(_ header: String?) -> [String] {
+        guard let header, header.utf8.count <= 16_384,
+              let expression = try? NSRegularExpression(pattern: "<[^<>\\s]+>") else { return [] }
+        let range = NSRange(header.startIndex..., in: header)
+        return expression.matches(in: header, range: range).prefix(50).compactMap { match in
+            Range(match.range, in: header).map { String(header[$0]) }
+        }
+    }
     static let unavailableWarning = "The original body could not be decoded. Other mail remains available; retry this message after updating Flora."
     static func isBodyFailure(_ error: any Error) -> Bool {
         switch error as? RemoteMailError {

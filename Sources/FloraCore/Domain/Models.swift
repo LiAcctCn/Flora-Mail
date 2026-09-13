@@ -14,17 +14,22 @@ public struct MailAccount: Codable, Identifiable, Equatable, Sendable {
     public var providerType: MailProviderType
     public var providerAccountID: String?
     public var oauthClientID: String?
+    public var oauthAccessLevel: OAuthAccessLevel
+    public var writePermission: MailWritePermission
+    public var writeAuthorizedAt: Date?
     public var credentialReference: MailCredentialReference?
     public var status: MailAccountStatus
     public var syncState: MailSyncState
-    public init(id: UUID = UUID(), name: String, address: MailAddress, provider: String = "Demo", providerType: MailProviderType = .demo, providerAccountID: String? = nil, credentialReference: MailCredentialReference? = nil, status: MailAccountStatus = .connected, syncState: MailSyncState = MailSyncState(), oauthClientID: String? = nil) {
+    public init(id: UUID = UUID(), name: String, address: MailAddress, provider: String = "Demo", providerType: MailProviderType = .demo, providerAccountID: String? = nil, credentialReference: MailCredentialReference? = nil, status: MailAccountStatus = .connected, syncState: MailSyncState = MailSyncState(), oauthClientID: String? = nil, oauthAccessLevel: OAuthAccessLevel = .readOnly, writePermission: MailWritePermission = .readOnly, writeAuthorizedAt: Date? = nil) {
         self.id = id; self.name = name; self.address = address; self.provider = provider
         self.providerType = providerType; self.providerAccountID = providerAccountID; self.credentialReference = credentialReference
         self.status = status; self.syncState = syncState
         self.oauthClientID = oauthClientID
+        self.oauthAccessLevel = oauthAccessLevel; self.writePermission = writePermission; self.writeAuthorizedAt = writeAuthorizedAt
     }
-    public var isReadOnly: Bool { providerType != .demo }
-    private enum CodingKeys: String, CodingKey { case id, name, address, provider, providerType, providerAccountID, credentialReference, status, syncState, oauthClientID }
+    public var isRemote: Bool { providerType != .demo }
+    public var isReadOnly: Bool { isRemote && writePermission == .readOnly }
+    private enum CodingKeys: String, CodingKey { case id, name, address, provider, providerType, providerAccountID, credentialReference, status, syncState, oauthClientID, oauthAccessLevel, writePermission, writeAuthorizedAt }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id); name = try values.decode(String.self, forKey: .name)
@@ -32,6 +37,9 @@ public struct MailAccount: Codable, Identifiable, Equatable, Sendable {
         providerType = try values.decodeIfPresent(MailProviderType.self, forKey: .providerType) ?? .demo
         providerAccountID = try values.decodeIfPresent(String.self, forKey: .providerAccountID)
         oauthClientID = try values.decodeIfPresent(String.self, forKey: .oauthClientID)
+        oauthAccessLevel = try values.decodeIfPresent(OAuthAccessLevel.self, forKey: .oauthAccessLevel) ?? .readOnly
+        writePermission = try values.decodeIfPresent(MailWritePermission.self, forKey: .writePermission) ?? .readOnly
+        writeAuthorizedAt = try values.decodeIfPresent(Date.self, forKey: .writeAuthorizedAt)
         credentialReference = try values.decodeIfPresent(MailCredentialReference.self, forKey: .credentialReference)
         status = try values.decodeIfPresent(MailAccountStatus.self, forKey: .status) ?? .connected
         syncState = try values.decodeIfPresent(MailSyncState.self, forKey: .syncState) ?? MailSyncState()
@@ -92,7 +100,10 @@ public struct MailMessage: Codable, Identifiable, Equatable, Sendable {
     public var cc: [MailAddress]
     public var isImportant: Bool
     public var contentWarnings: [String]
-    public init(id: UUID = UUID(), providerID: String = "", accountID: UUID, threadID: UUID = UUID(), from: MailAddress, to: [MailAddress], subject: String, body: String, date: Date = Date(), folder: MailFolder = .inbox, isRead: Bool = false, isFlagged: Bool = false, categoryID: UUID? = nil, attachments: [MailAttachment] = [], providerThreadID: String? = nil, providerFolderIDs: [String] = [], htmlBody: String? = nil, cc: [MailAddress] = [], isImportant: Bool = false, contentWarnings: [String] = []) {
+    public var replyTo: [MailAddress]
+    public var internetMessageID: String?
+    public var references: [String]
+    public init(id: UUID = UUID(), providerID: String = "", accountID: UUID, threadID: UUID = UUID(), from: MailAddress, to: [MailAddress], subject: String, body: String, date: Date = Date(), folder: MailFolder = .inbox, isRead: Bool = false, isFlagged: Bool = false, categoryID: UUID? = nil, attachments: [MailAttachment] = [], providerThreadID: String? = nil, providerFolderIDs: [String] = [], htmlBody: String? = nil, cc: [MailAddress] = [], isImportant: Bool = false, contentWarnings: [String] = [], replyTo: [MailAddress] = [], internetMessageID: String? = nil, references: [String] = []) {
         self.id = id; self.providerID = providerID.isEmpty ? id.uuidString : providerID; self.accountID = accountID
         self.threadID = threadID; self.from = from; self.to = to; self.subject = subject; self.body = body
         self.date = date; self.folder = folder; self.isRead = isRead; self.isFlagged = isFlagged
@@ -100,8 +111,9 @@ public struct MailMessage: Codable, Identifiable, Equatable, Sendable {
         self.providerThreadID = providerThreadID; self.providerFolderIDs = providerFolderIDs; self.htmlBody = htmlBody; self.cc = cc
         self.isImportant = isImportant
         self.contentWarnings = contentWarnings
+        self.replyTo = replyTo; self.internetMessageID = internetMessageID; self.references = references
     }
-    private enum CodingKeys: String, CodingKey { case id, providerID, accountID, threadID, from, to, subject, body, date, folder, isRead, isFlagged, categoryID, attachments, providerThreadID, providerFolderIDs, htmlBody, cc, isImportant, contentWarnings }
+    private enum CodingKeys: String, CodingKey { case id, providerID, accountID, threadID, from, to, subject, body, date, folder, isRead, isFlagged, categoryID, attachments, providerThreadID, providerFolderIDs, htmlBody, cc, isImportant, contentWarnings, replyTo, internetMessageID, references }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id); providerID = try values.decode(String.self, forKey: .providerID)
@@ -116,6 +128,9 @@ public struct MailMessage: Codable, Identifiable, Equatable, Sendable {
         htmlBody = try values.decodeIfPresent(String.self, forKey: .htmlBody); cc = try values.decodeIfPresent([MailAddress].self, forKey: .cc) ?? []
         isImportant = try values.decodeIfPresent(Bool.self, forKey: .isImportant) ?? false
         contentWarnings = try values.decodeIfPresent([String].self, forKey: .contentWarnings) ?? []
+        replyTo = try values.decodeIfPresent([MailAddress].self, forKey: .replyTo) ?? []
+        internetMessageID = try values.decodeIfPresent(String.self, forKey: .internetMessageID)
+        references = try values.decodeIfPresent([String].self, forKey: .references) ?? []
     }
     public var preview: String { body.replacingOccurrences(of: "\n", with: " ") }
 }
@@ -187,9 +202,32 @@ public struct Draft: Codable, Identifiable, Equatable, Sendable {
     public var replyToMessageID: UUID?
     public var updatedAt: Date
     public var accountID: UUID?
-    public init(id: UUID = UUID(), to: String = "", subject: String = "", body: String = "", replyToMessageID: UUID? = nil, updatedAt: Date = Date(), accountID: UUID? = nil) {
+    public var cc: String
+    public var bcc: String
+    public var attachments: [DraftAttachment]
+    public var providerDraftID: String?
+    public var providerDraftMessageID: String?
+    public var draftSyncStatus: DraftSyncStatus
+    public var deliveryState: DraftDeliveryState
+    public init(id: UUID = UUID(), to: String = "", subject: String = "", body: String = "", replyToMessageID: UUID? = nil, updatedAt: Date = Date(), accountID: UUID? = nil, cc: String = "", bcc: String = "", attachments: [DraftAttachment] = [], providerDraftID: String? = nil, providerDraftMessageID: String? = nil, draftSyncStatus: DraftSyncStatus = .localOnly, deliveryState: DraftDeliveryState = .notSent) {
         self.id = id; self.to = to; self.subject = subject; self.body = body; self.replyToMessageID = replyToMessageID; self.updatedAt = updatedAt
         self.accountID = accountID
+        self.cc = cc; self.bcc = bcc; self.attachments = attachments; self.providerDraftID = providerDraftID
+        self.providerDraftMessageID = providerDraftMessageID; self.draftSyncStatus = draftSyncStatus; self.deliveryState = deliveryState
+    }
+    private enum CodingKeys: String, CodingKey { case id, to, subject, body, replyToMessageID, updatedAt, accountID, cc, bcc, attachments, providerDraftID, providerDraftMessageID, draftSyncStatus, deliveryState }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id); to = try values.decode(String.self, forKey: .to)
+        subject = try values.decode(String.self, forKey: .subject); body = try values.decode(String.self, forKey: .body)
+        replyToMessageID = try values.decodeIfPresent(UUID.self, forKey: .replyToMessageID)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt); accountID = try values.decodeIfPresent(UUID.self, forKey: .accountID)
+        cc = try values.decodeIfPresent(String.self, forKey: .cc) ?? ""; bcc = try values.decodeIfPresent(String.self, forKey: .bcc) ?? ""
+        attachments = try values.decodeIfPresent([DraftAttachment].self, forKey: .attachments) ?? []
+        providerDraftID = try values.decodeIfPresent(String.self, forKey: .providerDraftID)
+        providerDraftMessageID = try values.decodeIfPresent(String.self, forKey: .providerDraftMessageID)
+        draftSyncStatus = try values.decodeIfPresent(DraftSyncStatus.self, forKey: .draftSyncStatus) ?? .localOnly
+        deliveryState = try values.decodeIfPresent(DraftDeliveryState.self, forKey: .deliveryState) ?? .notSent
     }
 }
 
@@ -276,6 +314,7 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var accounts: [MailAccount]
     public var remoteFolders: [MailFolderDescriptor]
+    public var remoteActionHistory: [RemoteActionRecord]
     public var messages: [MailMessage]
     public var categories: [MailCategory]
     public var drafts: [Draft]
@@ -284,12 +323,13 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
     public var rules: [AutomationRule]
     public var history: [ExecutedAction]
     public var preferences: UserPreferences
-    public init(accounts: [MailAccount] = [], messages: [MailMessage] = [], categories: [MailCategory] = [], drafts: [Draft] = [], summaries: [MessageSummary] = [], classifications: [ClassificationSuggestion] = [], rules: [AutomationRule] = [], history: [ExecutedAction] = [], preferences: UserPreferences = UserPreferences(), remoteFolders: [MailFolderDescriptor] = []) {
+    public init(accounts: [MailAccount] = [], messages: [MailMessage] = [], categories: [MailCategory] = [], drafts: [Draft] = [], summaries: [MessageSummary] = [], classifications: [ClassificationSuggestion] = [], rules: [AutomationRule] = [], history: [ExecutedAction] = [], preferences: UserPreferences = UserPreferences(), remoteFolders: [MailFolderDescriptor] = [], remoteActionHistory: [RemoteActionRecord] = []) {
         schemaVersion = 1; self.accounts = accounts; self.messages = messages; self.categories = categories; self.drafts = drafts
         self.summaries = summaries; self.classifications = classifications; self.rules = rules; self.history = history; self.preferences = preferences
         self.remoteFolders = remoteFolders
+        self.remoteActionHistory = remoteActionHistory
     }
-    private enum CodingKeys: String, CodingKey { case schemaVersion, accounts, messages, categories, drafts, summaries, classifications, rules, history, preferences, remoteFolders }
+    private enum CodingKeys: String, CodingKey { case schemaVersion, accounts, messages, categories, drafts, summaries, classifications, rules, history, preferences, remoteFolders, remoteActionHistory }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
@@ -299,5 +339,6 @@ public struct AppSnapshot: Codable, Equatable, Sendable {
         rules = try values.decode([AutomationRule].self, forKey: .rules); history = try values.decode([ExecutedAction].self, forKey: .history)
         preferences = try values.decode(UserPreferences.self, forKey: .preferences)
         remoteFolders = try values.decodeIfPresent([MailFolderDescriptor].self, forKey: .remoteFolders) ?? []
+        remoteActionHistory = try values.decodeIfPresent([RemoteActionRecord].self, forKey: .remoteActionHistory) ?? []
     }
 }

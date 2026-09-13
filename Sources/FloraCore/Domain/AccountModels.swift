@@ -1,6 +1,10 @@
 import CryptoKit
 import Foundation
 
+/// Granted OAuth access is separate from the user's current permission to write.
+/// Existing registrations and saved configurations remain read-only by default.
+public enum OAuthAccessLevel: String, Codable, Equatable, Sendable { case readOnly, readWrite }
+
 public enum MailProviderType: String, Codable, CaseIterable, Identifiable, Sendable {
     case demo, gmail, microsoft, iCloud
     public var id: String { rawValue }
