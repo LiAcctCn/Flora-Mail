@@ -4,7 +4,7 @@ A runnable macOS research prototype for **Designing for Intelligence: A Human-Gu
 
 ## Launch
 
-Requires macOS 14 or later and Xcode with a Swift 6 toolchain. Demo mode needs no accounts, API keys, Internet connection, model installation, or third-party Swift packages. Local AI optionally connects to an installed local Ollama runtime.
+The packaged preview opens directly in Finder; see the [release guide](Docs/ReleaseGuide.md) for first use and signing limits. Building from source requires macOS 14 or later and Xcode with a Swift 6 toolchain. Demo mode needs no accounts, API keys, Internet connection, model installation, or third-party Swift packages. Local AI optionally connects to an installed local Ollama runtime.
 
 From this project folder:
 
@@ -14,6 +14,8 @@ open "build/Flora Mail.app"
 ```
 
 The build script produces a locally ad-hoc-signed `.app`. It is a development build, not a notarized distribution. The bundled binary targets the Mac on which it is built.
+
+Maintainers can run `./Scripts/package-release.sh` after the Release gate to create `build/Flora-Mail-Release.zip`, including the application, first-use guide and build revision. The script does not upload or access account data.
 
 For Xcode development, open `Package.swift`, choose the **FloraMail** executable scheme and **My Mac**, then Run. The project is a Swift package; a separate `.xcodeproj` is unnecessary. Command-line development also works with `swift run FloraMail`.
 
@@ -132,7 +134,7 @@ swift run FloraLocalAICheck --synchronized-fixture
 
 This is a live integration check, separate from the hermetic test suite. It requires the configured loopback Ollama service and never downloads a model. Results and confidence are generated predictions; exact quote validation confirms provenance, not the semantic truth of every paraphrase.
 
-Automated XCUITest coverage, Intel hardware, macOS 14 runtime, comprehensive VoiceOver operation and credential-dependent live mail service integration remain unverified. The deployment minimum is macOS 14; actual runtime testing was on macOS 26. The draft-aware Quit flow uses a SwiftUI API available in macOS 15.4 and later. On earlier systems, save or close the composer before quitting. Force-quitting cannot preserve edits that were never saved.
+Automated XCUITest coverage, Intel hardware, macOS 14 runtime, comprehensive VoiceOver operation and credential-dependent live mail service integration remain unverified. The deployment minimum is macOS 14; actual runtime testing was on macOS 26. The draft-aware Quit flow uses a SwiftUI API available in macOS 15.4 and later. On earlier systems, save or close the composer before quitting. Force-quitting can lose edits newer than the last successful recovery write.
 
 Current phase gates and verification limits are recorded in [roadmap verification](Docs/RoadmapProgress.md). The earlier read-only milestone is preserved in [historical verification notes](Docs/Verification.md).
 

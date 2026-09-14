@@ -37,13 +37,13 @@ struct AppModelTests {
         model.updateEditorDraft(edited, isDirty: true)
         if alreadyDismissed {
             model.composingDraft = nil
-            model.clearEditorDraft(id: saved.id)
+            model.editorDidDisappear(id: saved.id)
         }
-        model.restoreEditorAfterCancelledTermination(edited)
+        model.restoreEditorAfterCancelledTermination(try #require(model.editorDraft))
         model.compose()
         model.editDraft(Draft(subject: "Must not replace pending recovery"))
         #expect(model.composingDraft == nil)
-        if !alreadyDismissed { model.clearEditorDraft(id: saved.id) }
+        if !alreadyDismissed { model.editorDidDisappear(id: saved.id) }
         await nextMainQueueTurn()
         #expect(model.composingDraft == edited)
         #expect(model.editorDraft == edited)
@@ -53,8 +53,8 @@ struct AppModelTests {
         // The restored appearance consumes recovery; a later normal dismissal
         // must not automatically reopen the composer again.
         model.updateEditorDraft(edited, isDirty: model.draftHasUnsavedChanges(edited))
-        model.composingDraft = nil
-        model.clearEditorDraft(id: saved.id)
+        #expect(model.finishEditorClose(edited, decision: .discard))
+        model.editorDidDisappear(id: saved.id)
         await nextMainQueueTurn()
         #expect(model.composingDraft == nil)
         #expect(model.editorDraft == nil)
@@ -333,9 +333,10 @@ struct AppModelTests {
         #expect(model.composingDraft?.id == original.id)
         #expect(model.editorDraft == edited)
         #expect(model.editorIsDirty)
-        model.clearEditorDraft(id: other.id)
+        model.editorDidDisappear(id: other.id)
         #expect(model.editorDraft == edited)
-        model.clearEditorDraft(id: original.id)
+        #expect(model.finishEditorClose(edited, decision: .discard))
+        model.editorDidDisappear(id: original.id)
         #expect(model.editorDraft == nil)
         #expect(!model.editorIsDirty)
         model.composingDraft = nil

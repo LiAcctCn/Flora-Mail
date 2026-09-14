@@ -23,7 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.editorIsDirty, let draft = model.editorDraft else { return .terminateNow }
+        guard let model, let draft = model.editorDraft else { return .terminateNow }
+        if !model.editorIsDirty { return finishDraftTermination(.discard) }
         let alert = NSAlert()
         alert.messageText = "Save your draft before quitting?"
         alert.informativeText = "Your current edits have not been saved."
@@ -32,16 +33,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Keep Editing")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            if model.saveDraft(draft) { return .terminateNow }
-            let error = model.errorMessage ?? "Your draft could not be saved. Your text is still available here."
-            model.errorMessage = nil
-            model.restoreEditorAfterCancelledTermination(draft, recoveryError: error)
-            return .terminateCancel
-        case .alertSecondButtonReturn: return .terminateNow
+            return finishDraftTermination(.save)
+        case .alertSecondButtonReturn: return finishDraftTermination(.discard)
         default:
             model.restoreEditorAfterCancelledTermination(draft)
             return .terminateCancel
         }
+    }
+
+    /// Kept separate from NSAlert so tests exercise the same decision path,
+    /// including the editor state available after an early sheet disappearance.
+    @MainActor
+    func finishDraftTermination(_ decision: EditorCloseDecision) -> NSApplication.TerminateReply {
+        guard let model, let draft = model.editorDraft else { return .terminateNow }
+        if model.finishEditorClose(draft, decision: decision) { return .terminateNow }
+        let error = model.errorMessage ?? "The draft could not be closed safely. Your text is still available here."
+        model.errorMessage = nil
+        model.restoreEditorAfterCancelledTermination(draft, recoveryError: error)
+        return .terminateCancel
     }
 }
 

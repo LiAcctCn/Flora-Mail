@@ -8,11 +8,14 @@ import CryptoKit
 /// mail metadata are relative, so provider filenames cannot escape this store.
 actor AttachmentStorage {
     let root: URL
+    private let mimeTypeLookup: @Sendable (URL) throws -> String?
     static let maximumBytes = 25 * 1_024 * 1_024
     static let maximumOutgoingBytes = 2 * 1_024 * 1_024
     static let maximumOutgoingTotalBytes = 8 * 1_024 * 1_024
 
-    init(root: URL) { self.root = root }
+    init(root: URL, mimeTypeLookup: @escaping @Sendable (URL) throws -> String? = { source in
+        try source.resourceValues(forKeys: [.contentTypeKey]).contentType?.preferredMIMEType
+    }) { self.root = root; self.mimeTypeLookup = mimeTypeLookup }
 
     func save(_ data: Data, accountID: UUID, messageID: UUID, attachmentID: UUID, fileName: String) throws -> String {
         try Task.checkCancellation()
@@ -39,15 +42,19 @@ actor AttachmentStorage {
     func importForDraft(_ source: URL, accountID: UUID, draftID: UUID) throws -> DraftAttachment {
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
-        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentTypeKey])
-        guard values.isRegularFile == true, let size = values.fileSize, size <= Self.maximumOutgoingBytes else { throw AttachmentStorageError.outgoingTooLarge }
+        // File identity and bounds are required. MIME metadata is optional and
+        // can fail independently when LaunchServices is unavailable.
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink == false,
+              let size = values.fileSize, size >= 0, size <= Self.maximumOutgoingBytes else { throw AttachmentStorageError.outgoingTooLarge }
         let handle = try FileHandle(forReadingFrom: source)
         defer { try? handle.close() }
         let data = try handle.read(upToCount: Self.maximumOutgoingBytes + 1) ?? Data()
         guard data.count <= Self.maximumOutgoingBytes else { throw AttachmentStorageError.outgoingTooLarge }
         let id = UUID(), name = source.lastPathComponent
         let path = try save(data, accountID: accountID, messageID: draftID, attachmentID: id, fileName: name)
-        return DraftAttachment(id: id, name: name, mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream", size: data.count, localRelativePath: path,
+        let mimeType = (try? mimeTypeLookup(source)) ?? "application/octet-stream"
+        return DraftAttachment(id: id, name: name, mimeType: mimeType, size: data.count, localRelativePath: path,
                                contentHash: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
     }
 

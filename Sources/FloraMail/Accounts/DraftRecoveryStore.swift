@@ -5,7 +5,7 @@ import FloraCore
 /// Only one composer exists, so a single bounded, access-restricted file suffices.
 @MainActor
 final class DraftRecoveryStore {
-    enum StorageError: Error { case tooLarge }
+    enum StorageError: Error { case tooLarge, pendingRecovery }
     private let url: URL
     init(url: URL) { self.url = url }
     func load() throws -> Draft? {
@@ -15,6 +15,9 @@ final class DraftRecoveryStore {
         return try JSONDecoder().decode(Draft.self, from: Data(contentsOf: url))
     }
     func save(_ draft: Draft) throws {
+        // Recovery is a single slot, but it is not permission to overwrite a
+        // different unsaved draft awaiting the user's Review/Discard decision.
+        if let pending = try load(), pending.id != draft.id { throw StorageError.pendingRecovery }
         let data = try JSONEncoder().encode(draft)
         guard data.count <= 4 * 1_024 * 1_024 else { throw StorageError.tooLarge }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

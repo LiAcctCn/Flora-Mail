@@ -14,6 +14,7 @@ struct ComposerView: View {
     @State private var attachments: [DraftAttachment]
     @State private var importingAttachments = false
     @State private var importing = false
+    @State private var attachmentImportTask: Task<Void, Never>?
     @State private var remotePreview: RemoteMailProposal?
     @State private var subject: String
     @State private var bodyText: String
@@ -28,6 +29,7 @@ struct ComposerView: View {
     @State private var showDiscardConfirmation = false
     @State private var sendPreview: Draft?
     @State private var actionError: String?
+    @State private var submissionAcknowledged = false
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case recipient, subject, body }
@@ -72,11 +74,12 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        model.canSend(editedDraft) && recipientIsValid && !importing && !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !submissionAcknowledged && model.canSend(editedDraft) && recipientIsValid && !importing && !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var draftStatus: String {
+        if submissionAcknowledged { return model.canSendDemo(editedDraft) ? "Demo send completed" : "Submitted to mail service" }
         let saved = model.state.drafts.first(where: { $0.id == draft.id }) ?? draft
         if saved.deliveryState == .outcomeUnknown || saved.draftSyncStatus == .outcomeUnknown { return "Outcome unknown · Review Activity" }
         if saved.deliveryState == .sending { return "Submitting…" }
@@ -114,9 +117,10 @@ struct ComposerView: View {
                 }
             }
             .padding(20)
+            .disabled(submissionAcknowledged)
             Divider()
             HStack {
-                Button { importingAttachments = true } label: { Label("Attach Files…", systemImage: "paperclip") }.disabled(importing)
+                Button { importingAttachments = true } label: { Label("Attach Files…", systemImage: "paperclip") }.disabled(importing || submissionAcknowledged)
                 if importing { ProgressView().controlSize(.small) }
                 Text("Up to 2 MiB per file · 8 MiB total").font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -128,6 +132,7 @@ struct ComposerView: View {
                             HStack {
                                 Text(file.name).font(.caption)
                                 Button { attachments.removeAll { $0.id == file.id } } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).help("Remove \(file.name)")
+                                    .disabled(submissionAcknowledged)
                             }.padding(6).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                         }
                     }
@@ -141,9 +146,10 @@ struct ComposerView: View {
                 .focused($focusedField, equals: .body)
                 .accessibilityLabel("Message body")
                 .accessibilityIdentifier("composerBody")
+                .disabled(submissionAcknowledged)
             Divider()
             if model.state.preferences.researchMode == .hybrid {
-            writingTools
+            writingTools.disabled(submissionAcknowledged)
             if isRewriting {
                 Text(model.state.preferences.aiMode == .local ? "Generating a preview on this Mac. You can keep editing." : "Preparing a Demo AI preview. You can keep editing.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -157,7 +163,7 @@ struct ComposerView: View {
                     Label(rewriteError, systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack {
-                        Button("Retry") { generateRewrite() }.controlSize(.small)
+                        Button("Retry") { generateRewrite() }.controlSize(.small).disabled(submissionAcknowledged)
                         if model.state.preferences.aiMode == .local {
                             SettingsLink { Text("Configure Local AI") }.controlSize(.small)
                         }
@@ -178,7 +184,7 @@ struct ComposerView: View {
                         bodyText = acceptedRewrite.before
                         self.acceptedRewrite = nil
                         model.recordResearch(.undo)
-                    }.controlSize(.small)
+                    }.controlSize(.small).disabled(submissionAcknowledged)
                     Spacer()
                 }.padding(.horizontal, 20).padding(.bottom, 12)
             }
@@ -191,7 +197,7 @@ struct ComposerView: View {
         .useApplicationTerminationPolicy()
         .alert("Save changes to this draft?", isPresented: $showDiscardConfirmation) {
             Button("Save Draft") { saveAndClose() }
-            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Discard Changes", role: .destructive) { closeWithoutSaving() }
             Button("Keep Editing", role: .cancel) {}
         } message: {
             Text("Your edits have not been saved. Any previously saved version will remain in Drafts.")
@@ -199,8 +205,9 @@ struct ComposerView: View {
         .sheet(item: $sendPreview) { preview in
             DemoSendConfirmation(draft: preview) {
                 if model.sendDraft(preview) {
+                    acknowledgeSubmission()
                     sendPreview = nil
-                    dismiss()
+                    closeWithoutSaving()
                     return nil
                 }
                 return takeActionError()
@@ -208,19 +215,25 @@ struct ComposerView: View {
         }
         .sheet(item: $remotePreview) { proposal in
             RemoteActionPreview(proposal: proposal) {
-                if case .sendDraft = proposal.action { dismiss() }
+                if case .sendDraft = proposal.action {
+                    acknowledgeSubmission()
+                    closeWithoutSaving()
+                }
             }.environment(model)
         }
         .fileImporter(isPresented: $importingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            guard !submissionAcknowledged else { return }
             importing = true
-            Task { @MainActor in
+            attachmentImportTask?.cancel()
+            attachmentImportTask = Task { @MainActor in
                 defer { importing = false }
                 do {
                     for url in try result.get() {
                         let file = try await model.accountController.importAttachment(url, draft: editedDraft)
+                        try Task.checkCancellation()
                         attachments.append(file)
                     }
-                } catch { actionError = error.localizedDescription }
+                } catch is CancellationError {} catch { actionError = error.localizedDescription }
             }
         }
         .onChange(of: attachments) { _, _ in model.updateEditorDraft(editedDraft, isDirty: isDirty) }
@@ -236,7 +249,8 @@ struct ComposerView: View {
         }
         .onDisappear {
             rewriteTask?.cancel()
-            model.clearEditorDraft(id: draft.id)
+            attachmentImportTask?.cancel()
+            model.editorDidDisappear(id: draft.id)
         }
         .onChange(of: model.aiRequestIdentity) { _, _ in
             rewriteTask?.cancel()
@@ -338,14 +352,15 @@ struct ComposerView: View {
                     .font(.callout).foregroundStyle(.red)
             }
             HStack(spacing: 12) {
-                Button("Cancel") {
-                    if isDirty { showDiscardConfirmation = true } else { dismiss() }
+                Button(submissionAcknowledged ? "Close" : "Cancel") {
+                    if isDirty && !submissionAcknowledged { showDiscardConfirmation = true } else { closeWithoutSaving() }
                 }
                 .keyboardShortcut(.cancelAction)
                 Button("Save Draft") { saveAndClose() }
                     .keyboardShortcut("s", modifiers: .command)
+                    .disabled(submissionAcknowledged)
                 if model.state.accounts.first(where: { $0.id == draft.accountID })?.isRemote == true {
-                    Button("Sync Draft") { prepareRemote(send: false) }.disabled(!model.canSend(editedDraft) || importing)
+                    Button("Sync Draft") { prepareRemote(send: false) }.disabled(submissionAcknowledged || !model.canSend(editedDraft) || importing)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
@@ -380,6 +395,7 @@ struct ComposerView: View {
     }
 
     private func generateRewrite() {
+        guard !submissionAcknowledged else { return }
         rewriteTask?.cancel()
         let source = bodyText
         let tool = selectedTool
@@ -418,12 +434,25 @@ struct ComposerView: View {
     }
 
     private func canAccept(_ preview: RewritePreview) -> Bool {
-        model.canAcceptAISuggestions && bodyText == preview.source && preview.providerIdentity == model.aiRequestIdentity
+        !submissionAcknowledged && model.canAcceptAISuggestions && bodyText == preview.source && preview.providerIdentity == model.aiRequestIdentity
+    }
+
+    private func acknowledgeSubmission() {
+        submissionAcknowledged = true
+        rewriteTask?.cancel(); rewriteRequestID = UUID(); isRewriting = false
+        rewritePreview = nil; acceptedRewrite = nil
+        attachmentImportTask?.cancel(); importing = false
     }
 
     private func saveAndClose() {
         actionError = nil
-        if model.saveDraft(editedDraft) { dismiss() }
+        if model.finishEditorClose(editedDraft, decision: .save) { dismiss() }
+        else { actionError = takeActionError() }
+    }
+
+    private func closeWithoutSaving() {
+        actionError = nil
+        if model.finishEditorClose(editedDraft, decision: submissionAcknowledged ? .sent : .discard) { dismiss() }
         else { actionError = takeActionError() }
     }
 

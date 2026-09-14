@@ -115,6 +115,29 @@ struct RemoteMailPresentationTests {
         await #expect(throws: AttachmentStorageError.self) { try await store.outgoingPayloads(for: draft) }
     }
 
+    @Test func optionalMIMELookupFailureKeepsBoundsAndFileValidation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("FloraMIMELookup-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("fictional.txt")
+        let bytes = Data("A fictional attachment whose type metadata is unavailable.".utf8)
+        try bytes.write(to: source)
+        let store = AttachmentStorage(root: directory.appendingPathComponent("files"), mimeTypeLookup: { _ in throw CocoaError(.fileReadUnknown) })
+        var draft = Draft(accountID: UUID())
+        let accountID = try #require(draft.accountID)
+        let imported = try await store.importForDraft(source, accountID: accountID, draftID: draft.id)
+        #expect(imported.mimeType == "application/octet-stream" && imported.size == bytes.count)
+        draft.attachments = [imported]
+        #expect(try await store.outgoingPayloads(for: draft).first?.data == bytes)
+        let link = directory.appendingPathComponent("link.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        await #expect(throws: AttachmentStorageError.self) { try await store.importForDraft(link, accountID: accountID, draftID: draft.id) }
+        await #expect(throws: AttachmentStorageError.self) { try await store.importForDraft(directory, accountID: accountID, draftID: draft.id) }
+        let oversized = directory.appendingPathComponent("oversized.bin")
+        try Data(repeating: 0, count: AttachmentStorage.maximumOutgoingBytes + 1).write(to: oversized)
+        await #expect(throws: AttachmentStorageError.self) { try await store.importForDraft(oversized, accountID: accountID, draftID: draft.id) }
+    }
+
     @Test func recoveryIsSeparateFromSavedDraftAndPreservesOtherDrafts() throws {
         let (directory, account, _, _, model) = try fixture()
         defer { try? FileManager.default.removeItem(at: directory) }

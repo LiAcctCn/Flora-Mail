@@ -7,6 +7,9 @@ enum MailDestination: Hashable {
     case providerFolder(accountID: UUID, folderID: String)
 }
 
+/// Closing the editor is distinct from merely losing its view during Quit.
+enum EditorCloseDecision: Sendable { case save, discard, sent }
+
 @MainActor @Observable
 final class AppModel {
     private(set) var state: AppSnapshot
@@ -30,6 +33,7 @@ final class AppModel {
     private var editorIsPresented = false
     private var pendingEditorRestoration: Draft?
     private var editorRestorationID = UUID()
+    private var committedEditorCloseID: UUID?
     var errorMessage: String?
     var storageWarning: String?
     var statusMessage: String? {
@@ -103,9 +107,9 @@ final class AppModel {
         configureProviders()
         if !storageFailed {
             do {
-                if let recovery = try recoveryStore.load(), let id = recovery.accountID, state.accounts.contains(where: { $0.id == id }) {
-                    recoverableDraft = recovery
-                }
+                // Keep even legacy/unavailable-account recovery visible. Ignoring
+                // it here would let a new editor hide an existing unsaved draft.
+                recoverableDraft = try recoveryStore.load()
             } catch { editorRecoveryError = "The unsaved-draft recovery file could not be read. Existing saved drafts are preserved." }
         }
         accountController.onChange = { [weak self] in self?.refresh() }
@@ -126,7 +130,7 @@ final class AppModel {
         return "AI is off. Choose Demo AI or Local AI in Settings to enable assistance."
     }
     var canUndo: Bool { executor.canUndo }
-    var canCompose: Bool { !displayedAccounts.isEmpty }
+    var canCompose: Bool { !displayedAccounts.isEmpty && recoverableDraft == nil }
     var canMutateSelection: Bool { selectedMessage.map { !isReadOnly($0) } ?? false }
     var selectedMessage: MailMessage? { state.messages.first { $0.id == selectedMessageID } }
     var aiLabel: String { state.preferences.aiMode.rawValue }
@@ -224,6 +228,12 @@ final class AppModel {
             || draft.replyToMessageID != saved.replyToMessageID
     }
     func updateEditorDraft(_ draft: Draft, isDirty: Bool) {
+        // Late onChange/import callbacks from a dismissed composer must not
+        // recreate recovery after an explicit Save, Discard or acknowledged Send.
+        guard committedEditorCloseID != draft.id,
+              recoverableDraft == nil,
+              composingDraft == nil || composingDraft?.id == draft.id,
+              editorDraft == nil || editorDraft?.id == draft.id else { return }
         editorDraft = draft; editorIsDirty = isDirty; editorIsPresented = true
         if pendingEditorRestoration?.id == draft.id { pendingEditorRestoration = nil }
         recoveryTask?.cancel()
@@ -239,7 +249,8 @@ final class AppModel {
         recoveryTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(500))
-                guard let self, self.editorDraft?.id == draft.id else { return }
+                try Task.checkCancellation()
+                guard let self, self.editorDraft?.id == draft.id, self.committedEditorCloseID != draft.id else { return }
                 try self.recoveryStore.save(draft)
                 self.editorRecoveryError = nil
             } catch is CancellationError {} catch {
@@ -247,21 +258,79 @@ final class AppModel {
             }
         }
     }
-    func clearEditorDraft(id: UUID) {
-        guard editorDraft?.id == id else { return }
+    /// A disappeared sheet may be awaiting the delegate's Quit decision. Retain
+    /// dirty text and restore it if termination is cancelled; disappearance is
+    /// never interpreted as the user's permission to discard their edits.
+    func editorDidDisappear(id: UUID) {
+        if committedEditorCloseID == id { editorIsPresented = false; return }
+        guard let draft = editorDraft, draft.id == id else { return }
         editorIsPresented = false
         if pendingEditorRestoration != nil { scheduleEditorRestoration() }
-        else {
-            recoveryTask?.cancel()
-            do { if persistentStorageAvailable { try recoveryStore.clear(draftID: id) }; recoverableDraft = nil }
-            catch { editorRecoveryError = "The old recovery copy could not be cleared. Review it on the next launch." }
-            editorDraft = nil; editorIsDirty = false
+        else if editorIsDirty {
+            pendingEditorRestoration = draft
+            composingDraft = nil
+            scheduleEditorRestoration()
+        } else if !finishEditorClose(draft, decision: .discard) {
+            restoreEditorAfterCancelledTermination(draft, recoveryError: editorRecoveryError)
         }
     }
+
+    /// Return true only after the requested close has been committed. Send is
+    /// already acknowledged before this method is called; it performs no mail IO.
+    @discardableResult
+    func finishEditorClose(_ draft: Draft, decision: EditorCloseDecision) -> Bool {
+        guard editorDraft?.id == draft.id else {
+            errorMessage = "This editor changed. Review the current draft before closing it."
+            return false
+        }
+        recoveryTask?.cancel(); recoveryTask = nil
+        editorRestorationID = UUID()
+        if case .save = decision {
+            guard persistentStorageAvailable else {
+                let message = "This temporary session cannot save a draft permanently. Restore local storage or keep a copy before quitting."
+                editorRecoveryError = message; errorMessage = message
+                return false
+            }
+            guard saveDraft(draft) else { editorRecoveryError = errorMessage; return false }
+        }
+        do {
+            // An unreadable-store fallback must not modify existing private
+            // recovery. Explicit Discard may still close its temporary editor.
+            if persistentStorageAvailable { try recoveryStore.clear(draftID: draft.id) }
+        } catch {
+            let message: String
+            switch decision {
+            case .save: message = "Your draft was saved, but its recovery copy could not be cleared. Restore storage access and try closing again."
+            case .discard: message = "The recovery copy could not be cleared, so these edits have not been discarded. Restore storage access and try again."
+            case .sent: message = "The send completed, but its recovery copy could not be cleared. Do not send again. Restore storage access and close the editor."
+            }
+            editorIsDirty = draftHasUnsavedChanges(draft)
+            editorRecoveryError = message; errorMessage = message
+            return false
+        }
+        committedEditorCloseID = draft.id
+        pendingEditorRestoration = nil
+        if recoverableDraft?.id == draft.id { recoverableDraft = nil }
+        editorDraft = nil; editorIsDirty = false; editorRecoveryError = nil
+        composingDraft = nil
+        return true
+    }
     func recoverUnsavedDraft() {
-        guard let draft = recoverableDraft, composingDraft == nil else { return }
-        if let account = state.accounts.first(where: { $0.id == draft.accountID }) { setDemoMode(!account.isRemote) }
-        composingDraft = draft; recoverableDraft = nil
+        guard let draft = recoverableDraft, composingDraft == nil, pendingEditorRestoration == nil,
+              !editorIsPresented, editorDraft == nil else { return }
+        let knownAccountIDs = Set([
+            draft.accountID,
+            draft.replyToMessageID.flatMap { id in state.messages.first { $0.id == id }?.accountID },
+            state.drafts.first(where: { $0.id == draft.id })?.accountID
+        ].compactMap { $0 })
+        guard knownAccountIDs.count == 1, let accountID = knownAccountIDs.first,
+              let account = state.accounts.first(where: { $0.id == accountID }) else {
+            errorMessage = "The account for this recovered draft is unavailable or conflicts with its saved message. The recovery copy is preserved. Review the account or discard this recovery before opening another editor."
+            return
+        }
+        setDemoMode(!account.isRemote)
+        guard state.preferences.showDemoAccounts == !account.isRemote else { return }
+        committedEditorCloseID = nil; composingDraft = draft; recoverableDraft = nil
     }
     func discardRecoveredDraft() {
         guard let draft = recoverableDraft else { return }
@@ -271,6 +340,7 @@ final class AppModel {
     func restoreEditorAfterCancelledTermination(_ draft: Draft, recoveryError: String? = nil) {
         // SwiftUI may dismiss an allowed sheet before the delegate vetoes Quit.
         // Retain the actual edited text until the replacement composer appears.
+        guard committedEditorCloseID != draft.id else { return }
         pendingEditorRestoration = draft
         editorDraft = draft; editorIsDirty = draftHasUnsavedChanges(draft)
         editorRecoveryError = recoveryError
@@ -286,8 +356,17 @@ final class AppModel {
         }
     }
     func editDraft(_ draft: Draft) {
-        guard composingDraft == nil, pendingEditorRestoration == nil else { return }
-        composingDraft = draft
+        guard requirePendingRecoveryDecision() else { return }
+        guard composingDraft == nil, pendingEditorRestoration == nil, !editorIsPresented, editorDraft == nil else { return }
+        committedEditorCloseID = nil; composingDraft = draft
+    }
+
+    private func requirePendingRecoveryDecision() -> Bool {
+        guard recoverableDraft == nil else {
+            errorMessage = "Review or discard the recovered unsaved draft before opening another editor. Its recovery copy has been preserved."
+            return false
+        }
+        return true
     }
 
     @discardableResult func perform(_ action: ProposedAction, confirmed: Bool = false) -> Bool {
@@ -367,7 +446,9 @@ final class AppModel {
     }
     func compose(replyTo message: MailMessage? = nil, forward: Bool = false, replyAll: Bool = false, suggestedText: String? = nil) {
         guard suggestedText == nil || canAcceptAISuggestions else { return }
-        guard composingDraft == nil, pendingEditorRestoration == nil else { return }
+        guard requirePendingRecoveryDecision() else { return }
+        guard composingDraft == nil, pendingEditorRestoration == nil, !editorIsPresented, editorDraft == nil else { return }
+        committedEditorCloseID = nil
         research.record(.compose)
         if suggestedText != nil { research.record(.aiAccepted) }
         if let message {
