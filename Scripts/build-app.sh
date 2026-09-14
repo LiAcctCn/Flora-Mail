@@ -7,6 +7,12 @@ if [[ "$CONFIGURATION" != "release" && "$CONFIGURATION" != "debug" ]]; then
   echo "Usage: ./Scripts/build-app.sh [release|debug]" >&2
   exit 1
 fi
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$PROJECT_DIR/Scripts/Info.plist")"
+ICON_PATH="$PROJECT_DIR/Resources/$ICON_NAME"
+if [[ ! -f "$ICON_PATH" ]]; then
+  echo "Missing application icon: $ICON_PATH" >&2
+  exit 1
+fi
 export CLANG_MODULE_CACHE_PATH="$PROJECT_DIR/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PROJECT_DIR/.build/ModuleCache"
 swift build --disable-sandbox --cache-path "$PROJECT_DIR/.build/cache" -c "$CONFIGURATION"
@@ -15,6 +21,7 @@ APP_PATH="$PROJECT_DIR/build/Flora Mail.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$BINARY_DIR/FloraMail" "$APP_PATH/Contents/MacOS/FloraMail"
 cp "$PROJECT_DIR/Scripts/Info.plist" "$APP_PATH/Contents/Info.plist"
+cp "$ICON_PATH" "$APP_PATH/Contents/Resources/$ICON_NAME"
 codesign --force --sign - "$APP_PATH"
 echo "Built: $APP_PATH"
 echo "Launch: open \"$APP_PATH\""
