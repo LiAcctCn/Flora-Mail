@@ -1,6 +1,6 @@
 # Flora Mail release development
 
-The `v0.1.0` baseline is preserved. Development continues on `develop/live-account-validation`; each phase is built, tested, committed and pushed before the next phase starts.
+The `v0.1.0` baseline is preserved. The four release phases were developed on `develop/live-account-validation`; each phase was built, tested, committed and pushed before the next phase started. This document records those completed milestones rather than identifying an active development branch.
 
 ## Phase 1 — account and mail compatibility
 
