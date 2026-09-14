@@ -19,6 +19,8 @@ The build script produces a locally ad-hoc-signed `.app`. It is a development bu
 
 Maintainers can run `./Scripts/package-release.sh` after the Release gate to create `build/Flora-Mail-Release.zip`, including the application, first-use guide and build revision. The script does not upload or access account data.
 
+For drag-and-drop installation, run `./Scripts/package-dmg.sh`. It builds Release and creates `build/Flora-Mail-Beta.dmg` with **Flora Mail.app** and an **Applications** shortcut, plus a SHA-256 sidecar. The script verifies the image, mounts it read-only to check the application, icon and shortcut, then detaches it before publishing the local artifact. The app remains ad hoc signed; the DMG is unsigned and not notarized. No Git tags or GitHub Releases are created.
+
 For Xcode development, open `Package.swift`, choose the **FloraMail** executable scheme and **My Mac**, then Run. The project is a Swift package; a separate `.xcodeproj` is unnecessary. Command-line development also works with `swift run FloraMail`.
 
 ## Try the demo milestone

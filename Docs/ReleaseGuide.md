@@ -4,8 +4,8 @@ This is a preview release for manual checkout, not a production-verified mail cl
 
 ## Open the application
 
-1. Expand **Flora-Mail-Release.zip** in Finder.
-2. Move **Flora Mail.app** to Applications or another folder you own, and open it.
+1. Open **Flora-Mail-Beta.dmg** in Finder and drag **Flora Mail.app** onto the **Applications** shortcut. If using **Flora-Mail-Release.zip**, expand it and move the application to Applications or another folder you own.
+2. If using the DMG, eject it after copying. Open the installed **Flora Mail.app**.
 3. Start with **Demo Mode**. The fictional mailbox needs no credentials, model or network connection. A fresh installation uses **Flora Hybrid**, **Level 2 · Suggestions**, **Demo AI**, and research recording **Off**.
 
 The packaged build is for Apple Silicon and requires macOS 14 or later. It was tested on macOS 26.6 with Swift 6.3.3. It is locally ad hoc signed, without Developer ID signing or notarization; macOS may block a downloaded copy. Do not disable system security. A trusted local development build is available from the source while Developer ID distribution remains unavailable. Intel and macOS 14 runtime behavior have not been verified.
