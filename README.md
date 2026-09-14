@@ -2,6 +2,8 @@
 
 A runnable macOS research prototype for **Designing for Intelligence: A Human-Guided Framework for AI-Augmented Applications**. Built with Swift 6 and SwiftUI, with a complete demo mail workflow, Gmail/Microsoft/iCloud account adapters with explicit mail-action permissions, and real on-device inference through Ollama.
 
+This **Flora Mail - Beta** repository contains the macOS application. The portfolio website is maintained separately in **Flora Lab - Beta**. See [repository scope and preserved milestones](Docs/RepositoryHistory.md) for baseline, separation and icon provenance.
+
 ## Launch
 
 The packaged preview opens directly in Finder; see the [release guide](Docs/ReleaseGuide.md) for first use and signing limits. Building from source requires macOS 14 or later and Xcode with a Swift 6 toolchain. Demo mode needs no accounts, API keys, Internet connection, model installation, or third-party Swift packages. Local AI optionally connects to an installed local Ollama runtime.
