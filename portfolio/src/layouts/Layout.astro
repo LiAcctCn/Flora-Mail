@@ -1,18 +1,88 @@
 ---
-import '../styles/global.css';
-import Icon from '../components/Icon.astro';
-const title = 'Flora Mail — Human-guided AI, by design';
-const description = 'A local-first macOS email client and HCI research prototype exploring how AI can support graphical applications while preserving structure, privacy, and human control. Flora Mail Beta v0.2.0.';
+import "../styles/global.css";
+import Icon from "../components/Icon.astro";
+const title = "Flora Mail — Human-guided AI, by design";
+const description =
+  "A local-first macOS email client and HCI research prototype exploring how AI can support graphical applications while preserving structure, privacy, and human control. Flora Mail Beta v0.2.0.";
 ---
+
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="description" content={description} /><meta name="theme-color" content="#f7f8f5" /><meta property="og:type" content="website" /><meta property="og:title" content={title} /><meta property="og:description" content={description} /><link rel="icon" type="image/svg+xml" href="/favicon.svg" /><title>{title}</title></head>
-<body>
-<a href="#main" class="skip-link">Skip to content</a>
-<header class="site-header"><a class="brand" href="#top" aria-label="Flora Mail, back to top"><span class="brand-icon"><Icon name="mail" size={18} /></span> Flora Mail <span class="brand-beta">BETA</span></a>
-<nav aria-label="Main navigation"><a href="#experience">Experience</a><a href="#framework">Framework</a><a href="#engineering">Engineering</a><a href="#research">Research</a></nav>
-<a class="nav-source" href="https://github.com/LiAcctCn/Flora-Mail" target="_blank" rel="noopener noreferrer">GitHub <Icon name="external" size={16} /><span class="sr-only"> (may require access, opens in new tab)</span></a></header>
-<main id="main"><slot /></main>
-<footer class="site-footer wrap"><a class="brand" href="#top"><span class="brand-icon"><Icon name="mail" size={18} /></span> Flora Mail</a><p>A product. An inquiry. A work in progress.</p><a href="#top">Back to top ↑</a></footer>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#f7f8f5" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a href="#main" class="skip-link">
+      Skip to content
+    </a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Flora Mail, back to top">
+        <span class="brand-icon">
+          <Icon name="mail" size={18} />
+        </span>{" "}
+        Flora Mail <span class="brand-beta">BETA</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#experience">Experience</a>
+        <a href="#framework">Framework</a>
+        <a href="#engineering">Engineering</a>
+        <a href="#research">Research</a>
+      </nav>
+      <a
+        class="nav-source"
+        href="https://github.com/LiAcctCn/Flora-Mail"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        GitHub <Icon name="external" size={16} />
+        <span class="sr-only"> (may require access, opens in new tab)</span>
+      </a>
+    </header>
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <footer class="site-footer wrap">
+      <a class="brand" href="#top">
+        <span class="brand-icon">
+          <Icon name="mail" size={18} />
+        </span>{" "}
+        Flora Mail
+      </a>
+      <p>A product. An inquiry. A work in progress.</p>
+      <a href="#top">Back to top ↑</a>
+    </footer>
+    <script>
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      if ("IntersectionObserver" in window && !reduced) {
+        const reveal = new IntersectionObserver(
+          (entries) =>
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              entry.target.animate(
+                [
+                  { opacity: 0.65, transform: "translateY(12px)" },
+                  { opacity: 1, transform: "translateY(0)" },
+                ],
+                { duration: 550, easing: "ease-out" },
+              );
+              reveal.unobserve(entry.target);
+            }),
+          { threshold: 0.15 },
+        );
+        document
+          .querySelectorAll(".section-heading")
+          .forEach((element) => reveal.observe(element));
+      }
+    </script>
+  </body>
 </html>

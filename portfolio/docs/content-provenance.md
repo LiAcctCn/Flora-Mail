@@ -6,23 +6,23 @@ Content was checked exclusively against `/Users/chubai/Documents/Development/Flo
 
 References below are relative to the Beta repository. Line numbers describe the audited revision.
 
-| Portfolio claim | Repository evidence |
-| --- | --- |
-| Native macOS Swift / SwiftUI research prototype; Swift Package Manager | `README.md:3,7,20` |
-| Demo Mode, Inbox/Reader, Today briefing, composer/drafts, search, categories, settings/accounts, local cache, attachments, history | `README.md:39–51` |
-| Gmail, Microsoft Outlook / Microsoft 365 and iCloud provider architecture | `Docs/ReleaseNotes-0.2.0.md:7–9` |
-| Local summary, classification, action extraction, smart reply, writing tools, query expansion and source-linked assistant | `Docs/ReleaseNotes-0.2.0.md:10–11`; `Docs/LocalAI.md:17–27` |
-| Local AI via Ollama and gemma3:4b; no silent cloud fallback | `Docs/LocalAI.md:3–11,68` |
-| Scoped context, validation, cancellation and AI caching | `Docs/LocalAI.md:17–50` |
-| Suggest → Confirm → Execute; informational AI outputs do not hold mail execution authority | `Docs/Architecture.md:52–72` |
-| Five automation levels, scoped authorization, reviewed Run Now execution | `Docs/Automation.md:3–15`; `Sources/FloraCore/Automation/AutomationModels.swift:4–9` |
-| Traditional, Chat First and Flora Hybrid research presentation conditions | `Docs/Research.md:7–13` |
-| Optional, default-off local research instrumentation; no participant findings | `Docs/Research.md:17–46` |
-| 422 automated tests passed: 130 XCTest + 292 Swift Testing | `Docs/ReleaseNotes-0.2.0.md:26`; `Docs/RoadmapProgress.md:69` |
-| Debug and Release builds passed in the recorded application verification | `README.md:117`; `Docs/RoadmapProgress.md:73` |
-| Preview status and lack of production validation | `Docs/ReleaseNotes-0.2.0.md:3,30–36` |
+| Portfolio claim                                                                                                                    | Repository evidence                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Native macOS Swift / SwiftUI research prototype; Swift Package Manager                                                             | `README.md:3,7,20`                                                                   |
+| Demo Mode, Inbox/Reader, Today briefing, composer/drafts, search, categories, settings/accounts, local cache, attachments, history | `README.md:39–51`                                                                    |
+| Gmail, Microsoft Outlook / Microsoft 365 and iCloud provider architecture                                                          | `Docs/ReleaseNotes-0.2.0.md:7–9`                                                     |
+| Local summary, classification, action extraction, smart reply, writing tools, query expansion and source-linked assistant          | `Docs/ReleaseNotes-0.2.0.md:10–11`; `Docs/LocalAI.md:17–27`                          |
+| Local AI via Ollama and gemma3:4b; no silent cloud fallback                                                                        | `Docs/LocalAI.md:3–11,68`                                                            |
+| Scoped context, validation, cancellation and AI caching                                                                            | `Docs/LocalAI.md:17–50`                                                              |
+| Suggest → Confirm → Execute; informational AI outputs do not hold mail execution authority                                         | `Docs/Architecture.md:52–72`                                                         |
+| Five automation levels, scoped authorization, reviewed Run Now execution                                                           | `Docs/Automation.md:3–15`; `Sources/FloraCore/Automation/AutomationModels.swift:4–9` |
+| Traditional, Chat First and Flora Hybrid research presentation conditions                                                          | `Docs/Research.md:7–13`                                                              |
+| Optional, default-off local research instrumentation; no participant findings                                                      | `Docs/Research.md:17–46`                                                             |
+| 422 automated tests passed: 130 XCTest + 292 Swift Testing                                                                         | `Docs/ReleaseNotes-0.2.0.md:26`; `Docs/RoadmapProgress.md:69`                        |
+| Debug and Release builds passed in the recorded application verification                                                           | `README.md:117`; `Docs/RoadmapProgress.md:73`                                        |
+| Preview status and lack of production validation                                                                                   | `Docs/ReleaseNotes-0.2.0.md:3,30–36`                                                 |
 
-The working paper title, *Designing for Intelligence: A Human-Guided Framework for AI-Augmented Applications*, is recorded in `README.md:3` and `Docs/Research.md:3`. The Chinese title and central framing were supplied in the website brief. A published paper or final PDF is not established.
+The working paper title, _Designing for Intelligence: A Human-Guided Framework for AI-Augmented Applications_, is recorded in `README.md:3` and `Docs/Research.md:3`. The Chinese title and central framing were supplied in the website brief. A published paper or final PDF is not established.
 
 ## Required distinctions
 

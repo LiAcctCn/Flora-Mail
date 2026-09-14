@@ -1,17 +1,36 @@
 ---
-interface Props { name?: string; size?: number; }
-const { name = 'arrow', size = 20 } = Astro.props;
+interface Props {
+  name?: string;
+  size?: number;
+}
+const { name = "arrow", size = 20 } = Astro.props;
 const paths: Record<string, string> = {
- arrow: 'M5 12h14m-6-6 6 6-6 6', external: 'M7 17 17 7M7 7h10v10',
- mail: 'M4 5h16v14H4zM4 6l8 7 8-7', inbox: 'M4 4h16v16H4zM4 13h5l2 3h2l2-3h5',
- spark: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z',
- lock: 'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5zM12 14v3',
- search: 'M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',
- check: 'm5 12 4 4L19 6', code: 'm8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18',
- grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
- undo: 'M9 4 3 10l6 6M3 10h11a6 6 0 0 1 0 12',
- edit: 'm14 4 6 6M4 14 16 2l6 6L10 20l-8 2z',
- sun: 'M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2M17 12a5 5 0 1 1-10 0 5 5 0 0 1 10 0',
+  arrow: "M5 12h14m-6-6 6 6-6 6",
+  external: "M7 17 17 7M7 7h10v10",
+  mail: "M4 5h16v14H4zM4 6l8 7 8-7",
+  inbox: "M4 4h16v16H4zM4 13h5l2 3h2l2-3h5",
+  spark: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z",
+  lock: "M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5zM12 14v3",
+  search: "M21 21l-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+  check: "m5 12 4 4L19 6",
+  code: "m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18",
+  grid: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
+  undo: "M9 4 3 10l6 6M3 10h11a6 6 0 0 1 0 12",
+  edit: "m14 4 6 6M4 14 16 2l6 6L10 20l-8 2z",
+  sun: "M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2M17 12a5 5 0 1 1-10 0 5 5 0 0 1 10 0",
 };
 ---
-<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={paths[name] ?? paths.arrow} /></svg>
+
+<svg
+  width={size}
+  height={size}
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.5"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+>
+  <path d={paths[name] ?? paths.arrow} />
+</svg>

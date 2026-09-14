@@ -1,6 +1,174 @@
 ---
-import Icon from './Icon.astro';
+import Icon from "./Icon.astro";
 ---
-<section id="research" class="research-section"><div class="wrap"><div class="research-header"><p class="eyebrow"><span>08</span> The research behind the product</p><span class="pill">Working paper · Research prototype</span></div><div class="paper-grid"><div class="paper-title"><span class="paper-overline">HUMAN–COMPUTER INTERACTION / APPLIED AI</span><h2>Designing for<br /><em>Intelligence.</em></h2><p>A Human-Guided Framework<br />for AI-Augmented Applications</p><p class="chinese-title" lang="zh-CN">《面向智能的设计：AI 增强型应用中的以人为主导交互框架》</p><div class="paper-status"><Icon name="code" size={16}/><span>Flora Mail — primary case study</span></div></div><div class="research-intro"><p class="large-body">How can an application become more intelligent without making its user less in control?</p><p>The proposed framework treats AI as an augmentation of an already complete graphical application. Structure stays visible, suggestions stay reviewable, and authority stays explicit.</p><p>Flora Mail puts that framework into a working macOS email prototype: a familiar GUI, embedded assistance, and an optional information-access assistant.</p><p class="research-status">Implementation is evidence of a design direction. It is not evidence of a usability improvement.</p></div></div>
-<div class="research-modes-heading"><h3>Three lenses on the same task.</h3><span>Implemented research presentation modes</span></div><div class="research-modes"><article><span class="mode-number">A</span><h3>Traditional GUI</h3><p>Ordinary mail navigation and controls. AI and contextual assistance are hidden.</p><div class="mode-composition"><span>GUI</span></div></article><article><span class="mode-number">B</span><h3>Chat-First</h3><p>The read-only assistant leads the Today surface. Normal mail controls remain accessible.</p><div class="mode-composition"><span>Assistant</span><span>GUI</span></div></article><article class="hybrid-mode"><div class="mode-top"><span class="mode-number">C</span><span class="mode-badge">PROPOSED DIRECTION</span></div><h3>Flora Hybrid</h3><p>A traditional GUI with embedded AI and an optional assistant. The default research mode.</p><div class="mode-composition"><span>GUI</span><b>+</b><span>Embedded AI</span><b>+</b><span>Assistant</span></div></article></div><p class="modes-note">These modes change presentation, not permissions. They do not establish feature parity or a controlled experimental design.</p>
-<div class="evaluation"><div><p class="eyebrow">Proposed Evaluation</p><h3>Design the study<br />as carefully as the interface.</h3><p>A future evaluation could compare how people find information, review suggestions, and complete email tasks across the three conditions.</p><span class="evaluation-status">No participant study or experimental results are reported.</span></div><div class="evaluation-details"><details open><summary>01 / Tasks & comparisons <span aria-hidden="true">+</span></summary><p>Proposed tasks include finding a message, identifying a deadline, organizing mail, and drafting a reply. Tasks must be reviewed for suitability in each mode before any comparison. Assignment and counterbalancing remain to be designed.</p></details><details><summary>02 / Measures & human control <span aria-hidden="true">+</span></summary><p>A proposed study could examine task completion and errors, review and correction behavior, perceived control, predictability, trust, and workload. Task correctness and subjective measures need a reviewed protocol; they are not inferred from event counts.</p></details><details><summary>03 / Consent & privacy <span aria-hidden="true">+</span></summary><p>Existing instrumentation is opt-in and off by default. It records fixed interaction events and explicit task timers locally, excluding mail content, account identity, queries, and credentials. A real study still needs recruitment, participant consent, a data-handling plan, and any required institutional review.</p></details><details><summary>04 / Current evidence & limits <span aria-hidden="true">+</span></summary><p>The prototype and automated developer checks establish implementation behavior. They do not establish statistical significance, usability gains, model accuracy, or experimental findings. The working paper’s publication status and public manuscript are not yet provided.</p></details></div></div></div></section>
+
+<section id="research" class="research-section">
+  <div class="wrap">
+    <div class="research-header">
+      <p class="eyebrow">
+        <span>08</span> The research behind the product
+      </p>
+      <span class="pill">Working paper · Research prototype</span>
+    </div>
+    <div class="paper-grid">
+      <div class="paper-title">
+        <span class="paper-overline">
+          HUMAN–COMPUTER INTERACTION / APPLIED AI
+        </span>
+        <h2>
+          Designing for
+          <br />
+          <em>Intelligence.</em>
+        </h2>
+        <p>
+          A Human-Guided Framework
+          <br />
+          for AI-Augmented Applications
+        </p>
+        <p class="chinese-title" lang="zh-CN">
+          《面向智能的设计：AI 增强型应用中的以人为主导交互框架》
+        </p>
+        <div class="paper-status">
+          <Icon name="code" size={16} />
+          <span>Flora Mail — primary case study</span>
+        </div>
+      </div>
+      <div class="research-intro">
+        <p class="large-body">
+          How can an application become more intelligent without making its user
+          less in control?
+        </p>
+        <p>
+          The proposed framework treats AI as an augmentation of an already
+          complete graphical application. Structure stays visible, suggestions
+          stay reviewable, and authority stays explicit.
+        </p>
+        <p>
+          Flora Mail puts that framework into a working macOS email prototype: a
+          familiar GUI, embedded assistance, and an optional information-access
+          assistant.
+        </p>
+        <p class="research-status">
+          Implementation is evidence of a design direction. It is not evidence
+          of a usability improvement.
+        </p>
+      </div>
+    </div>
+    <div class="research-modes-heading">
+      <h3>Three lenses on the same task.</h3>
+      <span>Implemented research presentation modes</span>
+    </div>
+    <div class="research-modes">
+      <article>
+        <span class="mode-number">A</span>
+        <h3>Traditional GUI</h3>
+        <p>
+          Ordinary mail navigation and controls. AI and contextual assistance
+          are hidden.
+        </p>
+        <div class="mode-composition">
+          <span>GUI</span>
+        </div>
+      </article>
+      <article>
+        <span class="mode-number">B</span>
+        <h3>Chat-First</h3>
+        <p>
+          The read-only assistant leads the Today surface. Normal mail controls
+          remain accessible.
+        </p>
+        <div class="mode-composition">
+          <span>Assistant</span>
+          <span>GUI</span>
+        </div>
+      </article>
+      <article class="hybrid-mode">
+        <div class="mode-top">
+          <span class="mode-number">C</span>
+          <span class="mode-badge">PROPOSED DIRECTION</span>
+        </div>
+        <h3>Flora Hybrid</h3>
+        <p>
+          A traditional GUI with embedded AI and an optional assistant. The
+          default research mode.
+        </p>
+        <div class="mode-composition">
+          <span>GUI</span>
+          <b>+</b>
+          <span>Embedded AI</span>
+          <b>+</b>
+          <span>Assistant</span>
+        </div>
+      </article>
+    </div>
+    <p class="modes-note">
+      These modes change presentation, not permissions. They do not establish
+      feature parity or a controlled experimental design.
+    </p>
+    <div class="evaluation">
+      <div>
+        <p class="eyebrow">Proposed Evaluation</p>
+        <h3>
+          Design the study
+          <br />
+          as carefully as the interface.
+        </h3>
+        <p>
+          A future evaluation could compare how people find information, review
+          suggestions, and complete email tasks across the three conditions.
+        </p>
+        <span class="evaluation-status">
+          No participant study or experimental results are reported.
+        </span>
+      </div>
+      <div class="evaluation-details">
+        <details open>
+          <summary>
+            01 / Tasks & comparisons <span aria-hidden="true">+</span>
+          </summary>
+          <p>
+            Proposed tasks include finding a message, identifying a deadline,
+            organizing mail, and drafting a reply. Tasks must be reviewed for
+            suitability in each mode before any comparison. Assignment and
+            counterbalancing remain to be designed.
+          </p>
+        </details>
+        <details>
+          <summary>
+            02 / Measures & human control <span aria-hidden="true">+</span>
+          </summary>
+          <p>
+            A proposed study could examine task completion and errors, review
+            and correction behavior, perceived control, predictability, trust,
+            and workload. Task correctness and subjective measures need a
+            reviewed protocol; they are not inferred from event counts.
+          </p>
+        </details>
+        <details>
+          <summary>
+            03 / Consent & privacy <span aria-hidden="true">+</span>
+          </summary>
+          <p>
+            Existing instrumentation is opt-in and off by default. It records
+            fixed interaction events and explicit task timers locally, excluding
+            mail content, account identity, queries, and credentials. A real
+            study still needs recruitment, participant consent, a data-handling
+            plan, and any required institutional review.
+          </p>
+        </details>
+        <details>
+          <summary>
+            04 / Current evidence & limits <span aria-hidden="true">+</span>
+          </summary>
+          <p>
+            The prototype and automated developer checks establish
+            implementation behavior. They do not establish statistical
+            significance, usability gains, model accuracy, or experimental
+            findings. The working paper’s publication status and public
+            manuscript are not yet provided.
+          </p>
+        </details>
+      </div>
+    </div>
+  </div>
+</section>

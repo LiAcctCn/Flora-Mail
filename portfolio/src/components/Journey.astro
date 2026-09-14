@@ -1,8 +1,98 @@
 ---
-import SectionTitle from './SectionTitle.astro';
-import Icon from './Icon.astro';
-const stages = ['Concept','Interaction framework','Native macOS prototype','Local AI','Mail providers','Real mail actions','Context intelligence','Progressive automation','Research prototype'];
+import SectionTitle from "./SectionTitle.astro";
+import Icon from "./Icon.astro";
+const stages = [
+  "Concept",
+  "Interaction framework",
+  "Native macOS prototype",
+  "Local AI",
+  "Mail providers",
+  "Real mail actions",
+  "Context intelligence",
+  "Progressive automation",
+  "Research prototype",
+];
 ---
-<section id="journey" class="section wrap"><SectionTitle number="09" label="Project journey" title="From a question to a working prototype."/><ol class="journey">{stages.map((stage,i)=><li><span>{String(i+1).padStart(2,'0')}</span><strong>{stage}</strong></li>)}</ol><p class="journey-note">A conceptual development sequence. Provider-backed actions are implemented; live-account validation is still ahead.</p></section>
-<section id="status" class="status-section wrap"><div><span class="pill"><span class="dot"></span> Research Prototype</span><h2>Built. Tested.<br /><em>Still being explored.</em></h2><p>Flora Mail – Beta / v0.2.0 Prerelease</p></div><ul class="status-list"><li><span>Core macOS prototype</span><strong>Implemented</strong></li><li><span>Automated testing</span><strong>Established</strong></li><li><span>Real-account validation</span><strong class="pending">Ongoing · Unverified</strong></li><li><span>Research evaluation</span><strong class="pending">Proposed</strong></li><li><span>Production readiness</span><strong class="pending">Not claimed</strong></li></ul></section>
-<section id="closing" class="closing wrap"><p class="eyebrow">The idea worth pursuing</p><h2>Designing AI that works<br /><em>with the interface</em><br />— not instead of it.</h2><div class="closing-links"><a class="text-link" href="https://github.com/LiAcctCn/Flora-Mail" target="_blank" rel="noopener noreferrer">Explore on GitHub <Icon name="external" size={15}/><span class="sr-only"> (may require access, opens in new tab)</span></a><a class="text-link" href="#research">Research overview <Icon size={15}/></a></div><div class="remaining-links"><span>Repository may require access.</span><span>Paper / Public manuscript to be added</span><span>Contact / Details to be added</span></div></section>
+
+<section id="journey" class="section wrap">
+  <SectionTitle
+    number="09"
+    label="Project journey"
+    title="From a question to a working prototype."
+  />
+  <ol class="journey">
+    {stages.map((stage, i) => (
+      <li>
+        <span>{String(i + 1).padStart(2, "0")}</span>
+        <strong>{stage}</strong>
+      </li>
+    ))}
+  </ol>
+  <p class="journey-note">
+    A conceptual development sequence. Provider-backed actions are implemented;
+    live-account validation is still ahead.
+  </p>
+</section>
+<section id="status" class="status-section wrap">
+  <div>
+    <span class="pill">
+      <span class="dot"></span> Research Prototype
+    </span>
+    <h2>
+      Built. Tested.
+      <br />
+      <em>Still being explored.</em>
+    </h2>
+    <p>Flora Mail – Beta / v0.2.0 Prerelease</p>
+  </div>
+  <ul class="status-list">
+    <li>
+      <span>Core macOS prototype</span>
+      <strong>Implemented</strong>
+    </li>
+    <li>
+      <span>Automated testing</span>
+      <strong>Established</strong>
+    </li>
+    <li>
+      <span>Real-account validation</span>
+      <strong class="pending">Ongoing · Unverified</strong>
+    </li>
+    <li>
+      <span>Research evaluation</span>
+      <strong class="pending">Proposed</strong>
+    </li>
+    <li>
+      <span>Production readiness</span>
+      <strong class="pending">Not claimed</strong>
+    </li>
+  </ul>
+</section>
+<section id="closing" class="closing wrap">
+  <p class="eyebrow">The idea worth pursuing</p>
+  <h2>
+    Designing AI that works
+    <br />
+    <em>with the interface</em>
+    <br />— not instead of it.
+  </h2>
+  <div class="closing-links">
+    <a
+      class="text-link"
+      href="https://github.com/LiAcctCn/Flora-Mail"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      Explore on GitHub <Icon name="external" size={15} />
+      <span class="sr-only"> (may require access, opens in new tab)</span>
+    </a>
+    <a class="text-link" href="#research">
+      Research overview <Icon size={15} />
+    </a>
+  </div>
+  <div class="remaining-links">
+    <span>Repository may require access.</span>
+    <span>Paper / Public manuscript to be added</span>
+    <span>Contact / Details to be added</span>
+  </div>
+</section>

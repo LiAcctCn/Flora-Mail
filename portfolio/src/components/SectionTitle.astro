@@ -1,5 +1,16 @@
 ---
-interface Props { number: string; label: string; title: string; }
+interface Props {
+  number: string;
+  label: string;
+  title: string;
+}
 const { number, label, title } = Astro.props;
 ---
-<div class="section-heading"><p class="eyebrow"><span>{number}</span> {label}</p><h2>{title}</h2><slot /></div>
+
+<div class="section-heading">
+  <p class="eyebrow">
+    <span>{number}</span> {label}
+  </p>
+  <h2>{title}</h2>
+  <slot />
+</div>
