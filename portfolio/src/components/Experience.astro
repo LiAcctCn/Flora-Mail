@@ -9,6 +9,7 @@ const views = [
 ];
 ---
 <section id="experience" class="section wrap"><SectionTitle number="03" label="Product experience" title="Email first. Assistance where it helps."><p>A native SwiftUI workspace, from the first message of the day to the last draft. Demo Mode is available without accounts or a model.</p></SectionTitle>
+<noscript><style>.experience-panel[hidden]{display:grid!important}.experience-tabs{display:none!important}.experience-panel{margin-bottom:40px}</style></noscript>
 <div class="experience-tabs" role="tablist" aria-label="Product experiences">{views.map((v,i)=><button id={`tab-${v.id}`} role="tab" aria-selected={i===0?'true':'false'} aria-controls={`panel-${v.id}`} tabindex={i===0?0:-1} data-experience={v.id}><Icon name={v.icon} size={17}/>{v.label}</button>)}</div>
 {views.map((v,i)=><div class="experience-panel" id={`panel-${v.id}`} role="tabpanel" aria-labelledby={`tab-${v.id}`} hidden={i!==0} tabindex="0"><div class="experience-copy"><p class="eyebrow">{v.kicker}</p><h3>{v.title}</h3><p>{v.copy}</p><div class="feature-note"><Icon name="check" size={16}/><p>{v.feature}</p></div></div><div class="experience-visual">
 <div class="mini-toolbar"><span class="traffic"><i></i><i></i><i></i></span><span>{v.id==='reader'?'Message Reader':v.id==='briefing'?'Today':v.id==='composer'?'Writing Preview':'Accounts'}</span></div>
