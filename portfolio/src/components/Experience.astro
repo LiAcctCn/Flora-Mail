@@ -1,0 +1,30 @@
+---
+import SectionTitle from './SectionTitle.astro';
+import Icon from './Icon.astro';
+const views = [
+ { id:'reader', label:'Read & understand', icon:'inbox', kicker:'Inbox · Reader · Categories', title:'Keep the original within reach.', copy:'Source-backed summaries, classification suggestions, and extracted actions sit inside a conventional message reader. Accept a local category when it makes sense. Keep reading when it doesn’t.', feature:'Smart Reply offers editable ideas in the normal composer.' },
+ { id:'briefing', label:'Find & prioritize', icon:'sun', kicker:'Daily Briefing · Search · Assistant', title:'A little context. A clearer day.', copy:'Daily Briefing explains priority signals. Optional local query expansion helps search cached mail. The read-only assistant answers from bounded excerpts and links back to sources.', feature:'Query expansion with local ranking; an embedding index is not implemented.' },
+ { id:'composer', label:'Write & review', icon:'edit', kicker:'Composer · Drafts · Writing Tools', title:'A suggestion is still yours to edit.', copy:'Proofread, adjust tone, or rewrite a draft. Preview the suggestion before Replace or Insert. Saving stays local; syncing a draft and sending require explicit action.', feature:'Draft recovery protects work. Sending has a separate confirmation and no automatic Undo.' },
+ { id:'accounts', label:'Connect & keep', icon:'lock', kicker:'Accounts · Sync · Offline', title:'Your mail, close at hand.', copy:'Gmail, Microsoft, and iCloud share a provider architecture. Local persistence and an offline cache keep synchronized mail available. Attachments download only when requested.', feature:'Provider adapters are implemented. Live sign-in, sync, and writes remain unverified.' },
+];
+---
+<section id="experience" class="section wrap"><SectionTitle number="03" label="Product experience" title="Email first. Assistance where it helps."><p>A native SwiftUI workspace, from the first message of the day to the last draft. Demo Mode is available without accounts or a model.</p></SectionTitle>
+<div class="experience-tabs" role="tablist" aria-label="Product experiences">{views.map((v,i)=><button id={`tab-${v.id}`} role="tab" aria-selected={i===0?'true':'false'} aria-controls={`panel-${v.id}`} tabindex={i===0?0:-1} data-experience={v.id}><Icon name={v.icon} size={17}/>{v.label}</button>)}</div>
+{views.map((v,i)=><div class="experience-panel" id={`panel-${v.id}`} role="tabpanel" aria-labelledby={`tab-${v.id}`} hidden={i!==0} tabindex="0"><div class="experience-copy"><p class="eyebrow">{v.kicker}</p><h3>{v.title}</h3><p>{v.copy}</p><div class="feature-note"><Icon name="check" size={16}/><p>{v.feature}</p></div></div><div class="experience-visual">
+<div class="mini-toolbar"><span class="traffic"><i></i><i></i><i></i></span><span>{v.id==='reader'?'Message Reader':v.id==='briefing'?'Today':v.id==='composer'?'Writing Preview':'Accounts'}</span></div>
+{v.id==='reader'&&<div class="mini-content"><span class="mini-meta">PROFESSOR ELAINE LIN · FICTIONAL MAIL</span><h4>PHYS 204 · A new deadline</h4><div class="mini-ai"><Icon name="spark" size={18}/><div><strong>At a glance</strong><p>Submit the problem set by Friday, 5:00 PM.</p></div></div><div class="mini-split"><span>Suggested category</span><span class="message-tag">School</span></div><div class="mini-bottom">Review suggestion <span>→</span> Confirm category</div></div>}
+{v.id==='briefing'&&<div class="mini-content"><span class="mini-meta">DAILY BRIEFING · FICTIONAL MAIL</span><h4>A little room to focus.</h4><div class="briefing-row"><span class="briefing-number">01</span><div><strong>Design review</strong><p>Maya is waiting for feedback on the category flow.</p></div></div><div class="briefing-row"><span class="briefing-number">02</span><div><strong>Project sync</strong><p>John asks you to confirm the new meeting time.</p></div></div><div class="mini-bottom"><Icon name="search" size={14}/> Search your cached mail</div></div>}
+{v.id==='composer'&&<div class="mini-content"><span class="mini-meta">PROOFREAD · FICTIONAL DRAFT</span><h4>Your words. Your decision.</h4><div class="rewrite-old">Yes I can meeting tomorrow.</div><div class="rewrite-new"><Icon name="spark" size={17}/> Yes, I can meet tomorrow.</div><p class="preview-label">The draft stays unchanged until you accept.</p><div class="mini-bottom">Preview <span>→</span> Replace <span>→</span> Undo Rewrite</div></div>}
+{v.id==='accounts'&&<div class="mini-content"><span class="mini-meta">PROVIDER ARCHITECTURE</span><h4>One familiar workspace.</h4>{['Gmail','Microsoft Outlook / 365','iCloud Mail'].map(name=><div class="provider-row"><Icon name="mail" size={17}/><strong>{name}</strong><span>Adapter implemented</span></div>)}<div class="mini-bottom"><Icon name="lock" size={14}/> Credentials in macOS Keychain</div></div>}
+<p class="concept-label">Conceptual presentation · Not an application screenshot</p></div></div>)}
+</section>
+<script>
+const tabs = [...document.querySelectorAll<HTMLButtonElement>('[data-experience]')];
+function selectExperience(tab: HTMLButtonElement) {
+ tabs.forEach(item => { const active = item === tab; item.setAttribute('aria-selected', String(active)); item.tabIndex = active ? 0 : -1; const panel = document.getElementById(item.getAttribute('aria-controls') ?? ''); if (panel) panel.hidden = !active; });
+}
+tabs.forEach((tab,index) => {
+ tab.addEventListener('click', () => selectExperience(tab));
+ tab.addEventListener('keydown', event => { let next = index; if(event.key === 'ArrowRight') next = (index + 1) % tabs.length; else if(event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length; else if(event.key === 'Home') next = 0; else if(event.key === 'End') next = tabs.length - 1; else return; event.preventDefault(); selectExperience(tabs[next]); tabs[next].focus(); });
+});
+</script>
